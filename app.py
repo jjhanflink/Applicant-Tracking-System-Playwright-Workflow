@@ -32,6 +32,17 @@ if sys.platform == "win32":
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("ATSWorkflow")
+import subprocess
+
+# Auto-install Playwright browser binaries inside remote Linux container
+@st.cache_resource
+def ensure_playwright_binary():
+    try:
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+    except Exception as exc:
+        logger.warning(f"Playwright binary install failed or already present: {exc}")
+
+ensure_playwright_binary()
 
 DB_PATH = Path("applications.db")
 PROFILE_PATH = Path("candidate_profile.json")
