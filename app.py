@@ -1,16 +1,12 @@
-import os
+﻿import os
 import re
 import json
 import sqlite3
 import asyncio
-from datetime import datetime
 from urllib.parse import urlparse
 import streamlit as st
 from playwright.async_api import async_playwright
 
-# ==========================================
-# 1. DATABASE & STORAGE MANAGEMENT
-# ==========================================
 DB_FILE = "ats_queue.db"
 PROFILE_FILE = "candidate_profile.json"
 SCREENSHOT_PATH = "latest_view.png"
@@ -45,6 +41,7 @@ def load_profile():
         except Exception:
             pass
     return {
+        "full_name": "Joshua Hanflink",
         "first_name": "Joshua",
         "last_name": "Hanflink",
         "email": "jjhanflink@gmail.com",
@@ -53,44 +50,72 @@ def load_profile():
         "github": "https://github.com/jjhanflink",
         "portfolio": "https://jjhanflink.github.io",
         "school": "North Carolina State University",
-        "degree": "B.S. Electrical & Computer Engineering"
+        "degree": "B.S. Electrical & Computer Engineering",
+        "grad_date": "12/2027",
+        "us_authorized": True,
+        "sponsorship_needed": False,
+        "work_onsite": True
     }
 
 init_db()
 
-# ==========================================
-# 2. SMART EXTRACTION & PLATFORM DETECTION
-# ==========================================
 def detect_platform(url: str) -> str:
-    url_lower = url.lower()
-    if "greenhouse.io" in url_lower or "boards.greenhouse.io" in url_lower:
+    u = url.lower()
+    if "greenhouse.io" in u:
         return "Greenhouse"
-    elif "lever.co" in url_lower or "jobs.lever.co" in url_lower:
+    elif "lever.co" in u:
         return "Lever"
-    elif "myworkdayjobs.com" in url_lower or "workday" in url_lower:
+    elif "myworkdayjobs.com" in u or "workday" in u:
         return "Workday"
-    elif "ashbyhq.com" in url_lower:
+    elif "ashbyhq.com" in u:
         return "Ashby"
-    elif "taleo.net" in url_lower:
-        return "Taleo"
-    elif "tesla.com" in url_lower:
+    elif "tesla.com" in u:
         return "Tesla (Akamai WAF Protected)"
-    elif "honeywell.com" in url_lower:
-        return "Honeywell Enterprise Portal"
     return "Company Direct Portal"
 
 def parse_fallback_company(url: str) -> str:
     domain = urlparse(url).netloc.lower()
     domain = re.sub(r'^(www\.|careers\.|jobs\.|boards\.)', '', domain)
-    company_candidate = domain.split('.')[0]
-    return company_candidate.capitalize() if company_candidate else "Engineering Employer"
+    cand = domain.split('.')[0]
+    return cand.capitalize() if cand else "Engineering Employer"
 
-# ==========================================
-# 3. PLAYWRIGHT AUTOMATION ENGINE
-# ==========================================
 class ATSAutomator:
     def __init__(self, headless: bool = True):
         self.headless = headless
+
+    async def _navigate_to_form(self, page, url: str):
+        if "jobs.lever.co" in url and not url.rstrip("/").endswith("/apply"):
+            apply_url = url.rstrip("/") + "/apply"
+            try:
+                await page.goto(apply_url, wait_until="domcontentloaded", timeout=20000)
+                await asyncio.sleep(2)
+                return
+            except Exception:
+                pass
+
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(2)
+
+        has_form = await page.query_selector("input[type='text'], input[type='email'], input[name='name']")
+        if not has_form:
+            apply_selectors = [
+                "a:has-text('Apply for this job')",
+                "a:has-text('Apply Now')",
+                "button:has-text('Apply Now')",
+                "a:has-text('Apply')",
+                "button:has-text('Apply')",
+                ".postings-btn",
+                "[data-qa='show-page-apply']"
+            ]
+            for sel in apply_selectors:
+                btn = await page.query_selector(sel)
+                if btn:
+                    try:
+                        await btn.click()
+                        await asyncio.sleep(3)
+                        break
+                    except Exception:
+                        pass
 
     async def extract_title_and_probe(self, url: str):
         result = {
@@ -99,7 +124,6 @@ class ATSAutomator:
             "role": "Engineering Candidate Role",
             "platform": detect_platform(url),
             "cover_letter_allowed": "No",
-            "screenshot": None,
             "error": None
         }
         try:
@@ -112,29 +136,25 @@ class ATSAutomator:
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
                 )
                 page = await context.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                await asyncio.sleep(2)
+                await self._navigate_to_form(page, url)
 
                 page_title = await page.title()
                 result["title"] = page_title.strip()
 
                 if "access denied" in page_title.lower() or "forbidden" in page_title.lower():
                     result["error"] = "Access Denied by WAF (Akamai/Cloudflare). Manual submission required."
-                    result["company"] = parse_fallback_company(url)
-                    result["role"] = "WAF Protected Posting"
                 else:
                     if " at " in page_title:
-                        parts = page_title.split(" at ")
-                        result["role"] = parts[0].strip()
-                        result["company"] = parts[1].split("-")[0].split("|")[0].strip()
+                        p_parts = page_title.split(" at ")
+                        result["role"] = p_parts[0].strip()
+                        result["company"] = p_parts[1].split("-")[0].split("|")[0].strip()
                     elif " - " in page_title:
-                        parts = page_title.split(" - ")
-                        result["role"] = parts[0].strip()
-                        result["company"] = parts[1].strip()
+                        p_parts = page_title.split(" - ")
+                        result["role"] = p_parts[0].strip()
+                        result["company"] = p_parts[1].strip()
                     elif page_title:
                         result["role"] = page_title.strip()
 
-                # Check for cover letter field indicators
                 cl_elements = await page.query_selector_all(
                     "input[type='file'], textarea, label:has-text('cover letter'), label:has-text('Cover Letter')"
                 )
@@ -145,7 +165,6 @@ class ATSAutomator:
                         break
 
                 await page.screenshot(path=SCREENSHOT_PATH)
-                result["screenshot"] = SCREENSHOT_PATH
                 await browser.close()
         except Exception as e:
             result["error"] = str(e)
@@ -154,43 +173,93 @@ class ATSAutomator:
         return result
 
     async def fill_application(self, url: str, profile: dict):
-        result = {"status": "In Progress", "screenshot": None, "error": None}
+        result = {"status": "In Progress", "error": None, "fields_filled": 0}
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(
                     headless=self.headless,
                     args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
                 )
-                context = await browser.new_context()
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                )
                 page = await context.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=40000)
-                await asyncio.sleep(3)
+                await self._navigate_to_form(page, url)
 
-                # Attempt standard candidate field injections
-                field_selectors = {
-                    "first_name": ["input[name*='first_name' i]", "input[id*='first_name' i]", "input[aria-label*='first name' i]"],
-                    "last_name": ["input[name*='last_name' i]", "input[id*='last_name' i]", "input[aria-label*='last name' i]"],
-                    "email": ["input[name*='email' i]", "input[type='email' i]", "input[id*='email' i]"],
-                    "phone": ["input[name*='phone' i]", "input[type='tel' i]", "input[id*='phone' i]"],
-                    "linkedin": ["input[name*='linkedin' i]", "input[aria-label*='linkedin' i]"],
-                    "github": ["input[name*='github' i]", "input[aria-label*='github' i]"]
-                }
+                filled_count = 0
 
-                for key, selectors in field_selectors.items():
-                    val = profile.get(key, "")
-                    if not val:
-                        continue
-                    for selector in selectors:
-                        input_elem = await page.query_selector(selector)
-                        if input_elem:
-                            try:
-                                await input_elem.fill(val)
-                                break
-                            except Exception:
-                                pass
+                # 1. Full Name & First/Last Name Handling
+                full_name_input = await page.query_selector("input[name='name'], input[aria-label*='Full Name' i]")
+                if full_name_input:
+                    await full_name_input.fill(profile.get("full_name", "Joshua Hanflink"))
+                    filled_count += 1
+                else:
+                    fn = await page.query_selector("input[name*='first_name' i], input[id*='first_name' i]")
+                    if fn:
+                        await fn.fill(profile.get("first_name", "Joshua"))
+                        filled_count += 1
+                    ln = await page.query_selector("input[name*='last_name' i], input[id*='last_name' i]")
+                    if ln:
+                        await ln.fill(profile.get("last_name", "Hanflink"))
+                        filled_count += 1
 
+                # 2. Email & Phone
+                em = await page.query_selector("input[name='email'], input[type='email'], input[id*='email' i]")
+                if em:
+                    await em.fill(profile.get("email", ""))
+                    filled_count += 1
+
+                ph = await page.query_selector("input[name='phone'], input[type='tel'], input[id*='phone' i]")
+                if ph:
+                    await ph.fill(profile.get("phone", ""))
+                    filled_count += 1
+
+                # 3. Organization / School
+                org = await page.query_selector("input[name='org'], input[id*='org' i], input[name*='company' i]")
+                if org:
+                    await org.fill(profile.get("school", "North Carolina State University"))
+                    filled_count += 1
+
+                # 4. URLs (LinkedIn, GitHub, Portfolio)
+                li = await page.query_selector("input[name='urls[LinkedIn]'], input[name*='linkedin' i]")
+                if li:
+                    await li.fill(profile.get("linkedin", ""))
+                    filled_count += 1
+
+                gh = await page.query_selector("input[name='urls[GitHub]'], input[name*='github' i]")
+                if gh:
+                    await gh.fill(profile.get("github", ""))
+                    filled_count += 1
+
+                pf = await page.query_selector("input[name='urls[Portfolio]'], input[name='urls[Other]'], input[name*='portfolio' i], input[name*='website' i]")
+                if pf:
+                    await pf.fill(profile.get("portfolio", ""))
+                    filled_count += 1
+
+                # 5. File Upload (resume.pdf if present in workspace)
+                if os.path.exists("resume.pdf"):
+                    f_input = await page.query_selector("input[type='file']")
+                    if f_input:
+                        try:
+                            await f_input.set_input_files("resume.pdf")
+                            filled_count += 1
+                        except Exception:
+                            pass
+
+                # 6. Auto-select Standard Confirmation Questions (US Person / Onsite)
+                yes_radios = await page.query_selector_all("input[type='radio'][value*='yes' i], input[type='radio'][value='1']")
+                for yr in yes_radios:
+                    try:
+                        parent_text = (await yr.evaluate("el => el.closest('div, fieldset')?.innerText || ''")).lower()
+                        if "authorized" in parent_text or "us person" in parent_text or "on-site" in parent_text or "onsite" in parent_text:
+                            await yr.check()
+                            filled_count += 1
+                    except Exception:
+                        pass
+
+                await asyncio.sleep(2)
                 await page.screenshot(path=SCREENSHOT_PATH)
-                result["screenshot"] = SCREENSHOT_PATH
+                result["fields_filled"] = filled_count
                 result["status"] = "Paused for Review"
                 await browser.close()
         except Exception as e:
@@ -206,31 +275,20 @@ def run_async_coro(coro):
         asyncio.set_event_loop(loop)
         return loop.run_until_complete(coro)
 
-# ==========================================
-# 4. STREAMLIT USER INTERFACE
-# ==========================================
-st.set_page_config(
-    page_title="Intelligent ATS Auto-Applier",
-    page_icon="⚡",
-    layout="wide"
-)
+st.set_page_config(page_title="Intelligent ATS Auto-Applier", page_icon="⚡", layout="wide")
 
-# Custom Styling
 st.markdown("""
 <style>
     .block-container { padding-top: 2rem; padding-bottom: 2rem; }
-    .job-card { background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; }
     .stButton>button { border-radius: 8px; font-family: monospace; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
-# Sidebar Configuration
 st.sidebar.title("⚙️ ATS Engine Settings")
 engine_mode = st.sidebar.radio(
     "Browser Execution Mode:",
     ["Headless (Cloud Safe)", "Headed (Visible Window - Local Only)"],
-    index=0,
-    help="Use Headless on Streamlit Cloud. Use Headed only when running locally on your computer."
+    index=0
 )
 is_headless = "Headless" in engine_mode
 
@@ -259,20 +317,16 @@ if st.sidebar.button("🧹 Purge Database (Full Reset)"):
     st.sidebar.success("Database wiped clean!")
     st.rerun()
 
-# Main Application Title
 st.title("⚡ ATS Application Engine & Queue Manager")
-st.caption("Playwright Async Auto-Applier with Direct Job Review & Anti-WAF Fallback")
+st.caption("Playwright Async Auto-Applier with Multi-Step Transition & Form Mapping")
 
 tab1, tab2, tab3 = st.tabs(["1. Add Jobs to Queue", "2. Process Queue & Review", "3. Application Tracker"])
 
-# ==========================================
-# TAB 1: ADD JOBS TO QUEUE
-# ==========================================
 with tab1:
     st.subheader("1. Add Applications to Queue")
     input_url = st.text_input(
         "Paste Job Application Link (Greenhouse, Lever, Workday, or Corporate Portal):",
-        placeholder="https://boards.greenhouse.io/... or https://jobs.lever.co/..."
+        placeholder="https://jobs.lever.co/... or https://boards.greenhouse.io/..."
     )
 
     col_a, col_b = st.columns([1, 1])
@@ -285,7 +339,7 @@ with tab1:
         if not input_url.strip():
             st.error("Please enter a valid job URL.")
         else:
-            with st.spinner("Probing URL with Playwright engine..."):
+            with st.spinner("Probing URL and resolving application form..."):
                 automator = ATSAutomator(headless=is_headless)
                 extracted = run_async_coro(automator.extract_title_and_probe(input_url.strip()))
 
@@ -293,7 +347,7 @@ with tab1:
                 final_role = custom_role.strip() or extracted["role"]
                 final_platform = extracted["platform"]
                 cl_status = extracted["cover_letter_allowed"]
-                notes = extracted["error"] if extracted["error"] else "Extracted successfully"
+                notes = extracted["error"] if extracted["error"] else "Form detected successfully"
 
                 try:
                     conn = get_db_connection()
@@ -310,9 +364,6 @@ with tab1:
                 except Exception as e:
                     st.error(f"Database error: {e}")
 
-# ==========================================
-# TAB 2: PROCESS QUEUE & REVIEW
-# ==========================================
 with tab2:
     st.subheader("2. Active Application Review & Execution Gate")
 
@@ -325,14 +376,12 @@ with tab2:
     if not pending_rows:
         st.info("🎉 Your pending queue is currently empty! Add new jobs in Tab 1.")
     else:
-        # Build selection dict
         job_options = {f"#{row[0]} | {row[1]} - {row[2]} ({row[4]})": row for row in pending_rows}
         selected_label = st.selectbox("Select Pending Job to Process:", list(job_options.keys()))
         job = job_options[selected_label]
 
         job_id, company, role, url, platform, status, cl_allowed, notes = job
 
-        # Card Display
         st.markdown(f"""
         <div style="background: rgba(15, 23, 42, 0.8); border: 1px solid #334155; padding: 1.5rem; border-radius: 12px; margin-bottom: 1.5rem;">
             <h3 style="margin-top:0; color:#38bdf8;">{role}</h3>
@@ -342,7 +391,6 @@ with tab2:
         </div>
         """, unsafe_allow_html=True)
 
-        # High-Impact Action Bar
         col_link, col_del = st.columns([3, 1])
         with col_link:
             st.markdown(f"""
@@ -361,24 +409,22 @@ with tab2:
 
         st.markdown("---")
 
-        # Visual Capture Preview
         if os.path.exists(SCREENSHOT_PATH):
-            st.markdown("##### 📸 Live Browser Capture (What the Cloud Engine Sees):")
+            st.markdown("##### 📸 Live Browser Capture (Current View):")
             st.image(SCREENSHOT_PATH, use_container_width=True)
 
         st.markdown("#### Automation & Final Submission Gate")
-        st.caption("For sites that block cloud workers (Tesla/Akamai), open the link above and submit in your browser, then mark as Submitted.")
 
         c1, c2, c3 = st.columns(3)
         with c1:
             if st.button("🚀 Run Playwright Auto-Fill", use_container_width=True):
-                with st.spinner("Injecting candidate credentials into form fields..."):
+                with st.spinner("Transitioning to form and injecting candidate details..."):
                     automator = ATSAutomator(headless=is_headless)
                     res = run_async_coro(automator.fill_application(url, profile))
                     if res["error"]:
                         st.error(f"Auto-fill error: {res['error']}")
                     else:
-                        st.success("Form fields mapped and injected! Check the screenshot above.")
+                        st.success(f"Injected {res['fields_filled']} fields into form! Check the screenshot above.")
                         st.rerun()
 
         with c2:
@@ -399,12 +445,8 @@ with tab2:
                 st.warning("Marked as Manual Action Needed.")
                 st.rerun()
 
-# ==========================================
-# TAB 3: APPLICATION TRACKER & QUEUE MANAGEMENT
-# ==========================================
 with tab3:
     st.subheader("3. Comprehensive Application Tracker")
-    
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT id, company, role, platform, status, url, created_at FROM applications ORDER BY id DESC")
