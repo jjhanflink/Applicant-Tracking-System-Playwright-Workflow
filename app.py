@@ -1,370 +1,433 @@
-import asyncio
-import contextlib
-import json
-import logging
 import os
 import re
+import json
 import sqlite3
-import sys
-import tempfile
-import threading
-import urllib.error
-import urllib.request
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
-
-import pandas as pd
+import asyncio
+from datetime import datetime
+from urllib.parse import urlparse
 import streamlit as st
-from playwright.async_api import (
-    Browser,
-    BrowserContext,
-    Error as PlaywrightError,
-    Page,
-    Playwright,
-    TimeoutError as PlaywrightTimeoutError,
-    async_playwright,
+from playwright.async_api import async_playwright
+
+# ==========================================
+# 1. DATABASE & STORAGE MANAGEMENT
+# ==========================================
+DB_FILE = "applications.db"
+PROFILE_FILE = "candidate_profile.json"
+SCREENSHOT_PATH = "latest_view.png"
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS applications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company TEXT,
+            role TEXT,
+            url TEXT UNIQUE,
+            platform TEXT,
+            status TEXT DEFAULT 'Pending',
+            cover_letter_allowed TEXT DEFAULT 'Unknown',
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def get_db_connection():
+    return sqlite3.connect(DB_FILE)
+
+def load_profile():
+    if os.path.exists(PROFILE_FILE):
+        try:
+            with open(PROFILE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "first_name": "Joshua",
+        "last_name": "Hanflink",
+        "email": "jjhanflink@gmail.com",
+        "phone": "727-555-0199",
+        "linkedin": "https://www.linkedin.com/in/joshua-hanflink",
+        "github": "https://github.com/jjhanflink",
+        "portfolio": "https://jjhanflink.github.io",
+        "school": "North Carolina State University",
+        "degree": "B.S. Electrical & Computer Engineering"
+    }
+
+init_db()
+
+# ==========================================
+# 2. SMART EXTRACTION & PLATFORM DETECTION
+# ==========================================
+def detect_platform(url: str) -> str:
+    url_lower = url.lower()
+    if "greenhouse.io" in url_lower or "boards.greenhouse.io" in url_lower:
+        return "Greenhouse"
+    elif "lever.co" in url_lower or "jobs.lever.co" in url_lower:
+        return "Lever"
+    elif "myworkdayjobs.com" in url_lower or "workday" in url_lower:
+        return "Workday"
+    elif "ashbyhq.com" in url_lower:
+        return "Ashby"
+    elif "taleo.net" in url_lower:
+        return "Taleo"
+    elif "tesla.com" in url_lower:
+        return "Tesla (Akamai WAF Protected)"
+    elif "honeywell.com" in url_lower:
+        return "Honeywell Enterprise Portal"
+    return "Company Direct Portal"
+
+def parse_fallback_company(url: str) -> str:
+    domain = urlparse(url).netloc.lower()
+    domain = re.sub(r'^(www\.|careers\.|jobs\.|boards\.)', '', domain)
+    company_candidate = domain.split('.')[0]
+    return company_candidate.capitalize() if company_candidate else "Engineering Employer"
+
+# ==========================================
+# 3. PLAYWRIGHT AUTOMATION ENGINE
+# ==========================================
+class ATSAutomator:
+    def __init__(self, headless: bool = True):
+        self.headless = headless
+
+    async def extract_title_and_probe(self, url: str):
+        result = {
+            "title": "",
+            "company": parse_fallback_company(url),
+            "role": "Engineering Candidate Role",
+            "platform": detect_platform(url),
+            "cover_letter_allowed": "No",
+            "screenshot": None,
+            "error": None
+        }
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(
+                    headless=self.headless,
+                    args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+                )
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                )
+                page = await context.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(2)
+
+                page_title = await page.title()
+                result["title"] = page_title.strip()
+
+                if "access denied" in page_title.lower() or "forbidden" in page_title.lower():
+                    result["error"] = "Access Denied by WAF (Akamai/Cloudflare). Manual submission required."
+                    result["company"] = parse_fallback_company(url)
+                    result["role"] = "WAF Protected Posting"
+                else:
+                    if " at " in page_title:
+                        parts = page_title.split(" at ")
+                        result["role"] = parts[0].strip()
+                        result["company"] = parts[1].split("-")[0].split("|")[0].strip()
+                    elif " - " in page_title:
+                        parts = page_title.split(" - ")
+                        result["role"] = parts[0].strip()
+                        result["company"] = parts[1].strip()
+                    elif page_title:
+                        result["role"] = page_title.strip()
+
+                # Check for cover letter field indicators
+                cl_elements = await page.query_selector_all(
+                    "input[type='file'], textarea, label:has-text('cover letter'), label:has-text('Cover Letter')"
+                )
+                for el in cl_elements:
+                    text_content = (await el.inner_text()).lower() if el else ""
+                    if "cover letter" in text_content or "additional documents" in text_content:
+                        result["cover_letter_allowed"] = "Yes"
+                        break
+
+                await page.screenshot(path=SCREENSHOT_PATH)
+                result["screenshot"] = SCREENSHOT_PATH
+                await browser.close()
+        except Exception as e:
+            result["error"] = str(e)
+            result["company"] = parse_fallback_company(url)
+            result["role"] = "Manual Review Required"
+        return result
+
+    async def fill_application(self, url: str, profile: dict):
+        result = {"status": "In Progress", "screenshot": None, "error": None}
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(
+                    headless=self.headless,
+                    args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+                )
+                context = await browser.new_context()
+                page = await context.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=40000)
+                await asyncio.sleep(3)
+
+                # Attempt standard candidate field injections
+                field_selectors = {
+                    "first_name": ["input[name*='first_name' i]", "input[id*='first_name' i]", "input[aria-label*='first name' i]"],
+                    "last_name": ["input[name*='last_name' i]", "input[id*='last_name' i]", "input[aria-label*='last name' i]"],
+                    "email": ["input[name*='email' i]", "input[type='email' i]", "input[id*='email' i]"],
+                    "phone": ["input[name*='phone' i]", "input[type='tel' i]", "input[id*='phone' i]"],
+                    "linkedin": ["input[name*='linkedin' i]", "input[aria-label*='linkedin' i]"],
+                    "github": ["input[name*='github' i]", "input[aria-label*='github' i]"]
+                }
+
+                for key, selectors in field_selectors.items():
+                    val = profile.get(key, "")
+                    if not val:
+                        continue
+                    for selector in selectors:
+                        input_elem = await page.query_selector(selector)
+                        if input_elem:
+                            try:
+                                await input_elem.fill(val)
+                                break
+                            except Exception:
+                                pass
+
+                await page.screenshot(path=SCREENSHOT_PATH)
+                result["screenshot"] = SCREENSHOT_PATH
+                result["status"] = "Paused for Review"
+                await browser.close()
+        except Exception as e:
+            result["error"] = str(e)
+            result["status"] = "Failed"
+        return result
+
+def run_async_coro(coro):
+    try:
+        return asyncio.run(coro)
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro)
+
+# ==========================================
+# 4. STREAMLIT USER INTERFACE
+# ==========================================
+st.set_page_config(
+    page_title="Intelligent ATS Auto-Applier",
+    page_icon="⚡",
+    layout="wide"
 )
 
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+# Custom Styling
+st.markdown("""
+<style>
+    .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+    .job-card { background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; }
+    .stButton>button { border-radius: 8px; font-family: monospace; font-weight: 600; }
+</style>
+""", unsafe_allow_html=True)
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-logger = logging.getLogger("ATSWorkflow")
-import subprocess
+# Sidebar Configuration
+st.sidebar.title("⚙️ ATS Engine Settings")
+engine_mode = st.sidebar.radio(
+    "Browser Execution Mode:",
+    ["Headless (Cloud Safe)", "Headed (Visible Window - Local Only)"],
+    index=0,
+    help="Use Headless on Streamlit Cloud. Use Headed only when running locally on your computer."
+)
+is_headless = "Headless" in engine_mode
 
-# Auto-install Playwright browser binaries inside remote Linux container
-@st.cache_resource
-def ensure_playwright_binary():
-    try:
-        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
-    except Exception as exc:
-        logger.warning(f"Playwright binary install failed or already present: {exc}")
+profile = load_profile()
+with st.sidebar.expander("👤 Candidate Profile Preview", expanded=False):
+    st.json(profile)
 
-ensure_playwright_binary()
+conn = get_db_connection()
+total_apps = conn.execute("SELECT COUNT(*) FROM applications").fetchone()[0]
+pending_apps = conn.execute("SELECT COUNT(*) FROM applications WHERE status='Pending'").fetchone()[0]
+conn.close()
 
-DB_PATH = Path("applications.db")
-PROFILE_PATH = Path("candidate_profile.json")
-DEFAULT_TIMEOUT_MS = 10000
+st.sidebar.markdown(f"**Total Applications Tracked:** `{total_apps}`")
+st.sidebar.markdown(f"**Pending Processing:** `{pending_apps}`")
 
-# =====================================================================
-# 1. Candidate Profile (Pre-Loaded Work History)
-# =====================================================================
-@dataclass
-class WorkExperienceItem:
-    company: str; role: str; location: str; start_date: str; end_date: str; domain: str; bullets: List[str]
+if st.sidebar.button("🧹 Purge Database (Full Reset)"):
+    conn = get_db_connection()
+    conn.execute("DELETE FROM applications")
+    conn.commit()
+    conn.close()
+    if os.path.exists(SCREENSHOT_PATH):
+        try:
+            os.remove(SCREENSHOT_PATH)
+        except Exception:
+            pass
+    st.sidebar.success("Database wiped clean!")
+    st.rerun()
 
-@dataclass
-class CandidateProfile:
-    full_name: str = "Joshua Jason Hanflink"
-    email: str = "jjhanflink@gmail.com"
-    phone: str = "336-929-6685"
-    location: str = "Raleigh, NC"
-    linkedin_url: str = "https://www.linkedin.com/in/joshua-hanflink"
-    github_url: str = "https://github.com/jjhanflink"
-    portfolio_url: str = "https://jjhanflink.github.io"
-    university: str = "North Carolina State University"
-    degree: str = "B.S. in Electrical & Computer Engineering (Double Major)"
-    gpa: str = "3.45"
-    grad_date: str = "December 2027"
-    work_authorized: str = "Yes"
-    sponsorship_required: str = "No"
-    experiences: List[Dict[str, Any]] = field(
-        default_factory=lambda: [
-            asdict(WorkExperienceItem("Northrop Grumman", "Virtual Engineering Intern", "Remote", "06/2026", "08/2026", "semiconductor", ["Completed PRR and 8D training.", "Evaluated packaging reliability."])),
-            asdict(WorkExperienceItem("ASCEND Research", "Hardware Researcher (3D Imaging)", "Raleigh, NC", "05/2026", "08/2026", "hardware", ["Architected 24V DC-DC power distributions.", "Hand-soldered multi-layer perfboards."])),
-            asdict(WorkExperienceItem("ASCEND Research", "Researcher (TCAD Automation)", "Raleigh, NC", "05/2025", "08/2025", "semiconductor", ["Engineered Python/Streamlit GDSII-to-TCAD automation.", "Automated Victory Process models."])),
-            asdict(WorkExperienceItem("VIP Foundry - NCSU", "Cleanroom Researcher", "Raleigh, NC", "01/2025", "Present", "semiconductor", ["Operated MA6 aligners and CHA Mark 40 evaporators.", "Conducted C-V testing."])),
-            asdict(WorkExperienceItem("NCSU Engineering", "Engineering Ambassador", "Raleigh, NC", "08/2024", "Present", "leadership", ["Mentored students and hosted technical panels."]))
-        ]
+# Main Application Title
+st.title("⚡ ATS Application Engine & Queue Manager")
+st.caption("Playwright Async Auto-Applier with Direct Job Review & Anti-WAF Fallback")
+
+tab1, tab2, tab3 = st.tabs(["1. Add Jobs to Queue", "2. Process Queue & Review", "3. Application Tracker"])
+
+# ==========================================
+# TAB 1: ADD JOBS TO QUEUE
+# ==========================================
+with tab1:
+    st.subheader("1. Add Applications to Queue")
+    input_url = st.text_input(
+        "Paste Job Application Link (Greenhouse, Lever, Workday, or Corporate Portal):",
+        placeholder="https://boards.greenhouse.io/... or https://jobs.lever.co/..."
     )
 
-    @property
-    def first_name(self) -> str: return self.full_name.strip().split()[0] if self.full_name else ""
-    @property
-    def last_name(self) -> str: return self.full_name.strip().split()[-1] if len(self.full_name.split()) > 1 else self.first_name
+    col_a, col_b = st.columns([1, 1])
+    with col_a:
+        custom_company = st.text_input("Override Company Name (Optional):", placeholder="Auto-detected if blank")
+    with col_b:
+        custom_role = st.text_input("Override Role Title (Optional):", placeholder="Auto-detected if blank")
 
-    @classmethod
-    def load(cls) -> "CandidateProfile":
-        if PROFILE_PATH.exists():
-            try: return cls(**json.loads(PROFILE_PATH.read_text(encoding="utf-8")))
-            except: pass
-        p = cls()
-        p.save()
-        return p
-
-    def save(self) -> None: PROFILE_PATH.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
-
-# =====================================================================
-# 2. Database Layer
-# =====================================================================
-class ApplicationDB:
-    VALID_STATUSES = ("Draft", "Queued", "Submitted", "Failed")
-
-    def __init__(self):
-        self._init_db()
-
-    @contextlib.contextmanager
-    def _connect(self):
-        conn = sqlite3.connect(str(DB_PATH), timeout=15.0, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        try: yield conn; conn.commit()
-        except Exception: conn.rollback(); raise
-        finally: conn.close()
-
-    def _init_db(self):
-        with self._connect() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS applications (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    company TEXT NOT NULL, role TEXT NOT NULL, url TEXT NOT NULL,
-                    status TEXT NOT NULL, match_score INTEGER DEFAULT 0,
-                    ats_platform TEXT DEFAULT 'Unknown',
-                    timestamp TEXT NOT NULL, error_log TEXT DEFAULT ''
-                )
-            """)
-
-    def create_application(self, company: str, role: str, url: str, ats: str = "Unknown", status: str = "Queued") -> int:
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        with self._connect() as conn:
-            cursor = conn.execute(
-                "INSERT INTO applications (company, role, url, status, ats_platform, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-                (company, role, url, status, ats, now_iso)
-            )
-            return cursor.lastrowid
-
-    def update_status(self, app_id: int, status: str, error_log: str = ""):
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        with self._connect() as conn:
-            conn.execute("UPDATE applications SET status=?, timestamp=?, error_log=? WHERE id=?", (status, now_iso, error_log, app_id))
-
-    def fetch_queued(self):
-        with self._connect() as conn:
-            return [dict(r) for r in conn.execute("SELECT * FROM applications WHERE status IN ('Draft', 'Queued')").fetchall()]
-
-    def fetch_all(self):
-        with self._connect() as conn:
-            return [dict(r) for r in conn.execute("SELECT * FROM applications ORDER BY id DESC").fetchall()]
-
-# =====================================================================
-# 3. Marketability & ATS Detection Logic
-# =====================================================================
-def detect_ats_platform(url: str) -> str:
-    domain = url.lower()
-    if "myworkdayjobs" in domain or "workday" in domain: return "Workday"
-    if "greenhouse.io" in domain: return "Greenhouse"
-    if "lever.co" in domain: return "Lever"
-    if "ashbyhq" in domain: return "Ashby"
-    if "taleo" in domain: return "Taleo"
-    if "icims" in domain: return "iCIMS"
-    if "smartrecruiters" in domain: return "SmartRecruiters"
-    if "bamboohr" in domain: return "BambooHR"
-    return "Internal Company / Custom Platform"
-
-def build_fallback_pdf(profile: CandidateProfile) -> str:
-    stream = f"BT /F1 9 Tf 40 740 Td ({profile.full_name} | {profile.email}) Tj ET"
-    pdf_bytes = (
-        b"%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
-        b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
-        b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R >> endobj\n"
-        b"4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n"
-        + f"5 0 obj << /Length {len(stream)} >> stream\n{stream}\nendstream endobj\n".encode()
-        + b"trailer << /Root 1 0 R >>\n%%EOF\n"
-    )
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix="_Josh_Hanflink_Resume.pdf")
-    tmp.write(pdf_bytes); tmp.close()
-    return tmp.name
-
-# =====================================================================
-# 4. Browser Engine (Playwright)
-# =====================================================================
-class ATSAutomator:
-    def __init__(self, db: ApplicationDB):
-        self.db = db
-        self._playwright = self._browser = self._context = self._page = None
-        self.active_app_id = None
-
-    async def start_session(self, headless: bool):
-        await self.close_session()
-        self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(headless=headless, args=["--disable-blink-features=AutomationControlled"])
-        self._context = await self._browser.new_context(viewport={"width": 1366, "height": 920})
-        self._page = await self._context.new_page()
-        self._page.set_default_timeout(DEFAULT_TIMEOUT_MS)
-
-    async def close_session(self):
-        for resource, closer in [(self._page, "close"), (self._context, "close"), (self._browser, "close"), (self._playwright, "stop")]:
-            if resource:
-                with contextlib.suppress(Exception): await getattr(resource, closer)()
-
-    async def extract_job_details(self, url: str) -> Tuple[str, str]:
-        """Navigates to the URL and extracts Company and Role from the page title dynamically."""
-        await self.start_session(headless=True)
-        company, role = "Unknown Company", "Unknown Role"
-        try:
-            await self._page.goto(url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
-            title = await self._page.title()
-            
-            # Clean up common ATS title junk
-            clean_title = re.sub(r"(?i)( - greenhouse| \| lever| - workday| - ashby|job application for )", "", title).strip()
-            
-            # Parse based on standard delimiters
-            if " at " in clean_title:
-                parts = clean_title.split(" at ")
-                role, company = parts[0].strip(), parts[-1].strip()
-            elif " - " in clean_title:
-                parts = clean_title.split(" - ")
-                company, role = parts[0].strip(), parts[1].strip()
-            elif " | " in clean_title:
-                parts = clean_title.split(" | ")
-                role, company = parts[0].strip(), parts[1].strip()
-            else:
-                role = clean_title
-                company = "Target Company"
-                
-            return company, role
-        except Exception as e:
-            logger.error(f"Title extraction failed: {e}")
-            return company, role
-        finally:
-            await self.close_session()
-
-    async def probe_cover_letter_allowed(self) -> bool:
-        """Probes the live DOM to see if a cover letter field or upload exists."""
-        if not self._page: return False
-        selectors = [
-            "#cover_letter_fieldset", "textarea[name*='cover_letter' i]", 
-            "input[type='file'][name*='cover_letter' i]", "input[data-automation-id='file-upload-input-ref']",
-            "button:has-text('Cover Letter')"
-        ]
-        for sel in selectors:
-            try:
-                if await self._page.locator(sel).first.count() > 0: return True
-            except: continue
-        return False
-
-    async def execute_guided_workflow(
-        self, app_id: int, url: str, pdf_path: str, headless: bool, phase_callback: Callable
-    ) -> Tuple[bool, str, Dict[str, Any]]:
-        self.active_app_id = app_id
-        telemetry = {"ATS Platform": detect_ats_platform(url), "Cover Letter Allowed": False}
-
-        try:
-            self.db.update_status(app_id, "Queued")
-            phase_callback("Navigating", 20, f"Opening {url}...")
-            await self.start_session(headless=headless)
-            await self._page.goto(url, wait_until="domcontentloaded")
-
-            if await self._page.locator("iframe#grnhse_iframe").count() > 0:
-                await self._page.goto(await self._page.locator("iframe#grnhse_iframe").get_attribute("src"))
-
-            phase_callback("Scanning ATS Capabilities", 50, "Checking for Cover Letter & Work History fields...")
-            telemetry["Cover Letter Allowed"] = await self.probe_cover_letter_allowed()
-
-            phase_callback("Auto-Filling Complete", 80, "Pre-filled known details. Awaiting manual review.")
-            
-            # Pause for User Review
-            return True, "AWAITING_REVIEW", telemetry
-
-        except Exception as exc:
-            err = str(exc)
-            self.db.update_status(app_id, "Failed", error_log=err)
-            await self.close_session()
-            return False, err, telemetry
-
-    async def finalize_submission(self) -> bool:
-        try:
-            self.db.update_status(self.active_app_id, "Submitted")
-            await self.close_session()
-            return True
-        except: return False
-
-# =====================================================================
-# 5. UI and Thread Manager
-# =====================================================================
-class AsyncWorkerRuntime:
-    def __init__(self):
-        self.loop = asyncio.new_event_loop()
-        threading.Thread(target=self.loop.run_forever, daemon=True).start()
-    def run(self, coro): return asyncio.run_coroutine_threadsafe(coro, self.loop).result()
-
-@st.cache_resource
-def get_runtime_and_services(): return AsyncWorkerRuntime(), ApplicationDB(), ATSAutomator(ApplicationDB())
-
-def render_app():
-    st.set_page_config(page_title="ATS Co-Pilot", page_icon="⚡", layout="wide")
-    runtime, db, automator = get_runtime_and_services()
-    profile = CandidateProfile.load()
-
-    st.session_state.setdefault("awaiting_review", False)
-    st.session_state.setdefault("telemetry", {})
-
-    st.title("⚡ Multi-ATS Job Queue & Guided Reviewer")
-
-    with st.sidebar:
-        is_headless = st.radio("Browser Engine", ["Headed (Visible Window)", "Headless"]) == "Headless"
-
-    # --- JOB QUEUE INGESTION ---
-    st.subheader("1. Add Jobs to Processing Queue")
-    with st.form("queue_form", clear_on_submit=True):
-        url = st.text_input("Application URL", placeholder="Paste job link here (e.g. Workday, Greenhouse, Lever)...")
-        submitted = st.form_submit_button("💾 Auto-Extract & Add to Queue")
-        
-    if submitted:
-        if url.strip():
-            with st.spinner("Extracting Company and Role from URL..."):
-                company, role = runtime.run(automator.extract_job_details(url.strip()))
-                ats_platform = detect_ats_platform(url)
-                db.create_application(company, role, url, ats=ats_platform)
-                st.success(f"Added to queue: **{role}** at **{company}** [{ats_platform}]")
+    if st.button("💾 Auto-Extract & Add to Queue", use_container_width=True):
+        if not input_url.strip():
+            st.error("Please enter a valid job URL.")
         else:
-            st.error("Please provide a valid Application URL.")
+            with st.spinner("Probing URL with Playwright engine..."):
+                automator = ATSAutomator(headless=is_headless)
+                extracted = run_async_coro(automator.extract_title_and_probe(input_url.strip()))
 
-    # --- JOB PROCESSING & REVIEW ---
-    st.subheader("2. Process Queue & Review")
-    queued_jobs = db.fetch_queued()
-    
-    if not queued_jobs:
-        st.info("No jobs in the queue. Add one above to start.")
+                final_company = custom_company.strip() or extracted["company"]
+                final_role = custom_role.strip() or extracted["role"]
+                final_platform = extracted["platform"]
+                cl_status = extracted["cover_letter_allowed"]
+                notes = extracted["error"] if extracted["error"] else "Extracted successfully"
+
+                try:
+                    conn = get_db_connection()
+                    conn.execute("""
+                        INSERT INTO applications (company, role, url, platform, status, cover_letter_allowed, notes)
+                        VALUES (?, ?, ?, ?, 'Pending', ?, ?)
+                    """, (final_company, final_role, input_url.strip(), final_platform, cl_status, notes))
+                    conn.commit()
+                    conn.close()
+                    st.success(f"Added to Queue: **{final_role}** at **{final_company}** [{final_platform}]")
+                    st.rerun()
+                except sqlite3.IntegrityError:
+                    st.warning("This job URL is already in your database.")
+                except Exception as e:
+                    st.error(f"Database error: {e}")
+
+# ==========================================
+# TAB 2: PROCESS QUEUE & REVIEW
+# ==========================================
+with tab2:
+    st.subheader("2. Active Application Review & Execution Gate")
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT id, company, role, url, platform, status, cover_letter_allowed, notes FROM applications WHERE status='Pending'")
+    pending_rows = c.fetchall()
+    conn.close()
+
+    if not pending_rows:
+        st.info("🎉 Your pending queue is currently empty! Add new jobs in Tab 1.")
     else:
-        job_options = {j['id']: f"[{j['ats_platform']}] {j['company']} - {j['role']}" for j in queued_jobs}
-        selected_id = st.selectbox("Select Application to Process:", options=list(job_options.keys()), format_func=lambda x: job_options[x])
-        selected_job = next(j for j in queued_jobs if j['id'] == selected_id)
+        # Build selection dict
+        job_options = {f"#{row[0]} | {row[1]} - {row[2]} ({row[4]})": row for row in pending_rows}
+        selected_label = st.selectbox("Select Pending Job to Process:", list(job_options.keys()))
+        job = job_options[selected_label]
 
-        if st.button("🚀 Launch Application", type="primary", disabled=st.session_state["awaiting_review"]):
-            st.session_state["awaiting_review"] = True
-            pdf_path = build_fallback_pdf(profile)
-            
-            with st.spinner("Bot is navigating and filling..."):
-                ok, msg, telemetry = runtime.run(
-                    automator.execute_guided_workflow(selected_id, selected_job['url'], pdf_path, is_headless, lambda p, pct, d: None)
-                )
-                st.session_state["telemetry"] = telemetry
-            st.rerun()
+        job_id, company, role, url, platform, status, cl_allowed, notes = job
 
-    # --- MANUAL REVIEW GATE ---
-    if st.session_state["awaiting_review"]:
-        st.divider()
-        st.warning("⚠️ **Review Required:** The browser is currently paused on the application page.")
-        
-        c1, c2 = st.columns(2)
-        c1.metric("ATS Platform Detected", st.session_state["telemetry"].get("ATS Platform", "Unknown"))
-        c2.metric("Cover Letter Allowed?", "Yes" if st.session_state["telemetry"].get("Cover Letter Allowed") else "No")
+        # Card Display
+        st.markdown(f"""
+        <div style="background: rgba(15, 23, 42, 0.8); border: 1px solid #334155; padding: 1.5rem; border-radius: 12px; margin-bottom: 1.5rem;">
+            <h3 style="margin-top:0; color:#38bdf8;">{role}</h3>
+            <h4 style="color:#94a3b8; margin-bottom: 0.5rem;">{company} • <span style="color:#a855f7;">{platform}</span></h4>
+            <p style="font-size: 0.85rem; color:#64748b; margin-bottom: 0.5rem;"><b>Status:</b> {status} | <b>Cover Letter Allowed:</b> {cl_allowed}</p>
+            <p style="font-size: 0.85rem; color:#e2e8f0; margin-bottom: 1rem;"><b>Probe Diagnostics:</b> {notes}</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-        st.markdown("### Manual Approval & Finish")
-        st.caption("Please review the browser window. Upload a specific cover letter if permitted, check custom dropdowns, and click Confirm below.")
-        
-        r1, r2 = st.columns(2)
-        if r1.button("✅ I Manually Submitted — Close Browser", type="primary", use_container_width=True):
-            runtime.run(automator.finalize_submission())
-            st.session_state["awaiting_review"] = False
-            st.rerun()
-        if r2.button("🛑 Abort Application", use_container_width=True):
-            db.update_status(automator.active_app_id, "Draft")
-            runtime.run(automator.close_session())
-            st.session_state["awaiting_review"] = False
-            st.rerun()
+        # High-Impact Action Bar
+        col_link, col_del = st.columns([3, 1])
+        with col_link:
+            st.markdown(f"""
+            <a href="{url}" target="_blank" style="display:inline-block; width:100%; text-align:center; padding: 0.65rem 1rem; background-color: #0284c7; color: white; border-radius: 8px; font-weight: bold; text-decoration: none; font-family: monospace;">
+                🔗 Open Job Application in New Tab ↗
+            </a>
+            """, unsafe_allow_html=True)
+        with col_del:
+            if st.button("🗑️ Delete Job", key=f"del_{job_id}", use_container_width=True):
+                conn = get_db_connection()
+                conn.execute("DELETE FROM applications WHERE id=?", (job_id,))
+                conn.commit()
+                conn.close()
+                st.success(f"Deleted job #{job_id} from queue.")
+                st.rerun()
 
-if __name__ == "__main__":
-    render_app()
+        st.markdown("---")
+
+        # Visual Capture Preview
+        if os.path.exists(SCREENSHOT_PATH):
+            st.markdown("##### 📸 Live Browser Capture (What the Cloud Engine Sees):")
+            st.image(SCREENSHOT_PATH, use_container_width=True)
+
+        st.markdown("#### Automation & Final Submission Gate")
+        st.caption("For sites that block cloud workers (Tesla/Akamai), open the link above and submit in your browser, then mark as Submitted.")
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if st.button("🚀 Run Playwright Auto-Fill", use_container_width=True):
+                with st.spinner("Injecting candidate credentials into form fields..."):
+                    automator = ATSAutomator(headless=is_headless)
+                    res = run_async_coro(automator.fill_application(url, profile))
+                    if res["error"]:
+                        st.error(f"Auto-fill error: {res['error']}")
+                    else:
+                        st.success("Form fields mapped and injected! Check the screenshot above.")
+                        st.rerun()
+
+        with c2:
+            if st.button("✅ Mark as Submitted", use_container_width=True):
+                conn = get_db_connection()
+                conn.execute("UPDATE applications SET status='Submitted' WHERE id=?", (job_id,))
+                conn.commit()
+                conn.close()
+                st.success("Marked as Submitted!")
+                st.rerun()
+
+        with c3:
+            if st.button("⚠️ Mark as Manual Action Needed", use_container_width=True):
+                conn = get_db_connection()
+                conn.execute("UPDATE applications SET status='Manual Action Needed' WHERE id=?", (job_id,))
+                conn.commit()
+                conn.close()
+                st.warning("Marked as Manual Action Needed.")
+                st.rerun()
+
+# ==========================================
+# TAB 3: APPLICATION TRACKER & QUEUE MANAGEMENT
+# ==========================================
+with tab3:
+    st.subheader("3. Comprehensive Application Tracker")
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT id, company, role, platform, status, url, created_at FROM applications ORDER BY id DESC")
+    all_rows = c.fetchall()
+    conn.close()
+
+    if not all_rows:
+        st.info("No applications in the tracker yet.")
+    else:
+        for item in all_rows:
+            i_id, i_comp, i_role, i_plat, i_stat, i_url, i_date = item
+            with st.container():
+                c_info, c_link, c_btn = st.columns([4, 2, 1])
+                with c_info:
+                    st.markdown(f"**#{i_id} • {i_comp}** — *{i_role}* `[{i_stat}]`")
+                    st.caption(f"Platform: {i_plat} | Created: {i_date}")
+                with c_link:
+                    st.markdown(f"[View Posting ↗]({i_url})")
+                with c_btn:
+                    if st.button("🗑️ Remove", key=f"tbl_del_{i_id}"):
+                        conn = get_db_connection()
+                        conn.execute("DELETE FROM applications WHERE id=?", (i_id,))
+                        conn.commit()
+                        conn.close()
+                        st.rerun()
+                st.markdown("<hr style='margin: 0.4rem 0; border-color: #1e293b;'/>", unsafe_allow_html=True)
