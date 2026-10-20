@@ -84,6 +84,7 @@ class ATSAutomator:
         self.headless = headless
 
     async def _navigate_to_form(self, page, url: str):
+        # Handle Lever 2-step application pages
         if "jobs.lever.co" in url and not url.rstrip("/").endswith("/apply"):
             apply_url = url.rstrip("/") + "/apply"
             try:
@@ -96,6 +97,24 @@ class ATSAutomator:
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(2)
 
+        # Handle Workday initial apply buttons (Shadow-DOM elements)
+        if "myworkdayjobs.com" in url:
+            wd_selectors = [
+                "[data-automation-id='applyExternal']", 
+                "[data-automation-id='applyWithWorkday']",
+                "a[data-automation-id='applyExternal']"
+            ]
+            for wd_sel in wd_selectors:
+                btn = await page.query_selector(wd_sel)
+                if btn:
+                    try:
+                        await btn.click()
+                        await asyncio.sleep(4)
+                        return
+                    except Exception:
+                        pass
+
+        # Handle standard generic Apply buttons if no form is immediately visible
         has_form = await page.query_selector("input[type='text'], input[type='email'], input[name='name']")
         if not has_form:
             apply_selectors = [
@@ -188,7 +207,6 @@ class ATSAutomator:
 
                 filled_count = 0
 
-                # 1. Full Name & First/Last Name Handling
                 full_name_input = await page.query_selector("input[name='name'], input[aria-label*='Full Name' i]")
                 if full_name_input:
                     await full_name_input.fill(profile.get("full_name", "Joshua Hanflink"))
@@ -203,7 +221,6 @@ class ATSAutomator:
                         await ln.fill(profile.get("last_name", "Hanflink"))
                         filled_count += 1
 
-                # 2. Email & Phone
                 em = await page.query_selector("input[name='email'], input[type='email'], input[id*='email' i]")
                 if em:
                     await em.fill(profile.get("email", ""))
@@ -214,13 +231,11 @@ class ATSAutomator:
                     await ph.fill(profile.get("phone", ""))
                     filled_count += 1
 
-                # 3. Organization / School
                 org = await page.query_selector("input[name='org'], input[id*='org' i], input[name*='company' i]")
                 if org:
                     await org.fill(profile.get("school", "North Carolina State University"))
                     filled_count += 1
 
-                # 4. URLs (LinkedIn, GitHub, Portfolio)
                 li = await page.query_selector("input[name='urls[LinkedIn]'], input[name*='linkedin' i]")
                 if li:
                     await li.fill(profile.get("linkedin", ""))
@@ -236,7 +251,6 @@ class ATSAutomator:
                     await pf.fill(profile.get("portfolio", ""))
                     filled_count += 1
 
-                # 5. File Upload (resume.pdf if present in workspace)
                 if os.path.exists("resume.pdf"):
                     f_input = await page.query_selector("input[type='file']")
                     if f_input:
@@ -246,7 +260,6 @@ class ATSAutomator:
                         except Exception:
                             pass
 
-                # 6. Auto-select Standard Confirmation Questions (US Person / Onsite)
                 yes_radios = await page.query_selector_all("input[type='radio'][value*='yes' i], input[type='radio'][value='1']")
                 for yr in yes_radios:
                     try:
@@ -285,11 +298,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.title("⚙️ ATS Engine Settings")
-engine_mode = st.sidebar.radio(
-    "Browser Execution Mode:",
-    ["Headless (Cloud Safe)", "Headed (Visible Window - Local Only)"],
-    index=0
-)
+engine_mode = st.sidebar.radio("Browser Execution Mode:", ["Headless (Cloud Safe)", "Headed (Visible Window - Local Only)"], index=0)
 is_headless = "Headless" in engine_mode
 
 profile = load_profile()
@@ -299,10 +308,14 @@ with st.sidebar.expander("👤 Candidate Profile Preview", expanded=False):
 conn = get_db_connection()
 total_apps = conn.execute("SELECT COUNT(*) FROM applications").fetchone()[0]
 pending_apps = conn.execute("SELECT COUNT(*) FROM applications WHERE status='Pending'").fetchone()[0]
+manual_apps = conn.execute("SELECT COUNT(*) FROM applications WHERE status='Manual Action Needed'").fetchone()[0]
+submitted_apps = conn.execute("SELECT COUNT(*) FROM applications WHERE status='Submitted'").fetchone()[0]
 conn.close()
 
-st.sidebar.markdown(f"**Total Applications Tracked:** `{total_apps}`")
-st.sidebar.markdown(f"**Pending Processing:** `{pending_apps}`")
+st.sidebar.markdown(f"**Total Tracked:** `{total_apps}`")
+st.sidebar.markdown(f"🟢 **Submitted:** `{submitted_apps}`")
+st.sidebar.markdown(f"🟡 **Pending:** `{pending_apps}`")
+st.sidebar.markdown(f"🔴 **Manual Action:** `{manual_apps}`")
 
 if st.sidebar.button("🧹 Purge Database (Full Reset)"):
     conn = get_db_connection()
@@ -324,16 +337,12 @@ tab1, tab2, tab3 = st.tabs(["1. Add Jobs to Queue", "2. Process Queue & Review",
 
 with tab1:
     st.subheader("1. Add Applications to Queue")
-    input_url = st.text_input(
-        "Paste Job Application Link (Greenhouse, Lever, Workday, or Corporate Portal):",
-        placeholder="https://jobs.lever.co/... or https://boards.greenhouse.io/..."
-    )
-
+    input_url = st.text_input("Paste Job Application Link (Greenhouse, Lever, Workday, or Corporate Portal):")
     col_a, col_b = st.columns([1, 1])
     with col_a:
-        custom_company = st.text_input("Override Company Name (Optional):", placeholder="Auto-detected if blank")
+        custom_company = st.text_input("Override Company Name (Optional):")
     with col_b:
-        custom_role = st.text_input("Override Role Title (Optional):", placeholder="Auto-detected if blank")
+        custom_role = st.text_input("Override Role Title (Optional):")
 
     if st.button("💾 Auto-Extract & Add to Queue", use_container_width=True):
         if not input_url.strip():
@@ -357,27 +366,26 @@ with tab1:
                     """, (final_company, final_role, input_url.strip(), final_platform, cl_status, notes))
                     conn.commit()
                     conn.close()
-                    st.success(f"Added to Queue: **{final_role}** at **{final_company}** [{final_platform}]")
+                    st.success(f"Added to Queue: **{final_role}** at **{final_company}**")
                     st.rerun()
                 except sqlite3.IntegrityError:
                     st.warning("This job URL is already in your database.")
-                except Exception as e:
-                    st.error(f"Database error: {e}")
 
 with tab2:
     st.subheader("2. Active Application Review & Execution Gate")
-
+    
+    # FIX: Now fetching BOTH Pending and Manual Action Needed jobs
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT id, company, role, url, platform, status, cover_letter_allowed, notes FROM applications WHERE status='Pending'")
+    c.execute("SELECT id, company, role, url, platform, status, cover_letter_allowed, notes FROM applications WHERE status IN ('Pending', 'Manual Action Needed')")
     pending_rows = c.fetchall()
     conn.close()
 
     if not pending_rows:
-        st.info("🎉 Your pending queue is currently empty! Add new jobs in Tab 1.")
+        st.info("🎉 Your actionable queue is currently empty!")
     else:
-        job_options = {f"#{row[0]} | {row[1]} - {row[2]} ({row[4]})": row for row in pending_rows}
-        selected_label = st.selectbox("Select Pending Job to Process:", list(job_options.keys()))
+        job_options = {f"#{row[0]} | {row[1]} - {row[2]} [{row[5]}]": row for row in pending_rows}
+        selected_label = st.selectbox("Select Actionable Job to Process:", list(job_options.keys()))
         job = job_options[selected_label]
 
         job_id, company, role, url, platform, status, cl_allowed, notes = job
@@ -404,45 +412,38 @@ with tab2:
                 conn.execute("DELETE FROM applications WHERE id=?", (job_id,))
                 conn.commit()
                 conn.close()
-                st.success(f"Deleted job #{job_id} from queue.")
                 st.rerun()
 
         st.markdown("---")
-
         if os.path.exists(SCREENSHOT_PATH):
             st.markdown("##### 📸 Live Browser Capture (Current View):")
             st.image(SCREENSHOT_PATH, use_container_width=True)
 
         st.markdown("#### Automation & Final Submission Gate")
-
         c1, c2, c3 = st.columns(3)
         with c1:
             if st.button("🚀 Run Playwright Auto-Fill", use_container_width=True):
-                with st.spinner("Transitioning to form and injecting candidate details..."):
+                with st.spinner("Transitioning to form and injecting details..."):
                     automator = ATSAutomator(headless=is_headless)
                     res = run_async_coro(automator.fill_application(url, profile))
                     if res["error"]:
                         st.error(f"Auto-fill error: {res['error']}")
                     else:
-                        st.success(f"Injected {res['fields_filled']} fields into form! Check the screenshot above.")
+                        st.success(f"Injected {res['fields_filled']} fields! Check screenshot.")
                         st.rerun()
-
         with c2:
             if st.button("✅ Mark as Submitted", use_container_width=True):
                 conn = get_db_connection()
                 conn.execute("UPDATE applications SET status='Submitted' WHERE id=?", (job_id,))
                 conn.commit()
                 conn.close()
-                st.success("Marked as Submitted!")
                 st.rerun()
-
         with c3:
             if st.button("⚠️ Mark as Manual Action Needed", use_container_width=True):
                 conn = get_db_connection()
                 conn.execute("UPDATE applications SET status='Manual Action Needed' WHERE id=?", (job_id,))
                 conn.commit()
                 conn.close()
-                st.warning("Marked as Manual Action Needed.")
                 st.rerun()
 
 with tab3:
@@ -458,15 +459,27 @@ with tab3:
     else:
         for item in all_rows:
             i_id, i_comp, i_role, i_plat, i_stat, i_url, i_date = item
+            
+            # Dynamic styling for status pills
+            stat_color = "#3b82f6" if i_stat == "Pending" else "#22c55e" if i_stat == "Submitted" else "#eab308"
+            
             with st.container():
-                c_info, c_link, c_btn = st.columns([4, 2, 1])
+                c_info, c_btn1, c_btn2 = st.columns([6, 1.5, 1.5])
                 with c_info:
-                    st.markdown(f"**#{i_id} • {i_comp}** — *{i_role}* `[{i_stat}]`")
-                    st.caption(f"Platform: {i_plat} | Created: {i_date}")
-                with c_link:
-                    st.markdown(f"[View Posting ↗]({i_url})")
-                with c_btn:
-                    if st.button("🗑️ Remove", key=f"tbl_del_{i_id}"):
+                    st.markdown(f"**#{i_id} • {i_comp}** — *{i_role}* <span style='color:{stat_color}; font-weight:bold;'>[{i_stat}]</span>", unsafe_allow_html=True)
+                    st.caption(f"Platform: {i_plat} | Created: {i_date} | [View Posting ↗]({i_url})")
+                
+                # Inline quick actions
+                with c_btn1:
+                    if i_stat != 'Submitted':
+                        if st.button("✅ Done", key=f"tbl_done_{i_id}", use_container_width=True):
+                            conn = get_db_connection()
+                            conn.execute("UPDATE applications SET status='Submitted' WHERE id=?", (i_id,))
+                            conn.commit()
+                            conn.close()
+                            st.rerun()
+                with c_btn2:
+                    if st.button("🗑️ Del", key=f"tbl_del_{i_id}", use_container_width=True):
                         conn = get_db_connection()
                         conn.execute("DELETE FROM applications WHERE id=?", (i_id,))
                         conn.commit()
