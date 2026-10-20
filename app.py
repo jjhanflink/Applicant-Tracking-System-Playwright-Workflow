@@ -46,6 +46,7 @@ def load_profile():
         "last_name": "Hanflink",
         "email": "jjhanflink@gmail.com",
         "phone": "727-555-0199",
+        "location": "Raleigh, North Carolina",
         "linkedin": "https://www.linkedin.com/in/joshua-hanflink",
         "github": "https://github.com/jjhanflink",
         "portfolio": "https://jjhanflink.github.io",
@@ -83,8 +84,28 @@ class ATSAutomator:
     def __init__(self, headless: bool = True):
         self.headless = headless
 
+    async def accept_cookies(self, page):
+        cookie_selectors = [
+            "button:has-text('Accept')",
+            "button:has-text('ACCEPT')",
+            "button:has-text('Accept Cookies')",
+            "button:has-text('Accept All Cookies')",
+            "button:has-text('Accept all')",
+            "button:has-text('Allow All')",
+            "#accept-cookies",
+            ".cookie-accept"
+        ]
+        for sel in cookie_selectors:
+            try:
+                btn = await page.query_selector(sel)
+                if btn and await btn.is_visible():
+                    await btn.click()
+                    await asyncio.sleep(1)
+                    break
+            except Exception:
+                pass
+
     async def _navigate_to_form(self, page, url: str):
-        # Handle Lever 2-step application pages
         if "jobs.lever.co" in url and not url.rstrip("/").endswith("/apply"):
             apply_url = url.rstrip("/") + "/apply"
             try:
@@ -97,7 +118,6 @@ class ATSAutomator:
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(2)
 
-        # Handle Workday initial apply buttons (Shadow-DOM elements)
         if "myworkdayjobs.com" in url:
             wd_selectors = [
                 "[data-automation-id='applyExternal']", 
@@ -114,7 +134,6 @@ class ATSAutomator:
                     except Exception:
                         pass
 
-        # Handle standard generic Apply buttons if no form is immediately visible
         has_form = await page.query_selector("input[type='text'], input[type='email'], input[name='name']")
         if not has_form:
             apply_selectors = [
@@ -156,6 +175,7 @@ class ATSAutomator:
                 )
                 page = await context.new_page()
                 await self._navigate_to_form(page, url)
+                await self.accept_cookies(page)
 
                 page_title = await page.title()
                 result["title"] = page_title.strip()
@@ -204,9 +224,27 @@ class ATSAutomator:
                 )
                 page = await context.new_page()
                 await self._navigate_to_form(page, url)
+                await self.accept_cookies(page)
 
                 filled_count = 0
 
+                # 1. RESUME FIRST - Wait for parsing to prevent form freezing
+                if os.path.exists("resume.pdf"):
+                    f_input = await page.query_selector("input[type='file']")
+                    if f_input:
+                        try:
+                            await f_input.set_input_files("resume.pdf")
+                            filled_count += 1
+                            # Wait for Lever's "Analyzing resume..." to finish and disappear
+                            try:
+                                await page.wait_for_selector("text='Analyzing resume'", state="hidden", timeout=12000)
+                            except Exception:
+                                pass
+                            await asyncio.sleep(1) # Final buffer before writing text
+                        except Exception:
+                            pass
+
+                # 2. INJECT TEXT FIELDS (Overwriting ATS bad parses)
                 full_name_input = await page.query_selector("input[name='name'], input[aria-label*='Full Name' i]")
                 if full_name_input:
                     await full_name_input.fill(profile.get("full_name", "Joshua Hanflink"))
@@ -230,6 +268,12 @@ class ATSAutomator:
                 if ph:
                     await ph.fill(profile.get("phone", ""))
                     filled_count += 1
+                    
+                loc = await page.query_selector("input[name*='location' i], input[id*='location' i], input[aria-label*='location' i]")
+                if loc:
+                    await loc.fill(profile.get("location", ""))
+                    await loc.press("Tab") # Lock in autocomplete
+                    filled_count += 1
 
                 org = await page.query_selector("input[name='org'], input[id*='org' i], input[name*='company' i]")
                 if org:
@@ -250,15 +294,6 @@ class ATSAutomator:
                 if pf:
                     await pf.fill(profile.get("portfolio", ""))
                     filled_count += 1
-
-                if os.path.exists("resume.pdf"):
-                    f_input = await page.query_selector("input[type='file']")
-                    if f_input:
-                        try:
-                            await f_input.set_input_files("resume.pdf")
-                            filled_count += 1
-                        except Exception:
-                            pass
 
                 yes_radios = await page.query_selector_all("input[type='radio'][value*='yes' i], input[type='radio'][value='1']")
                 for yr in yes_radios:
@@ -374,7 +409,6 @@ with tab1:
 with tab2:
     st.subheader("2. Active Application Review & Execution Gate")
     
-    # FIX: Now fetching BOTH Pending and Manual Action Needed jobs
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT id, company, role, url, platform, status, cover_letter_allowed, notes FROM applications WHERE status IN ('Pending', 'Manual Action Needed')")
@@ -423,7 +457,7 @@ with tab2:
         c1, c2, c3 = st.columns(3)
         with c1:
             if st.button("🚀 Run Playwright Auto-Fill", use_container_width=True):
-                with st.spinner("Transitioning to form and injecting details..."):
+                with st.spinner("Transitioning to form, handling cookies, and injecting details..."):
                     automator = ATSAutomator(headless=is_headless)
                     res = run_async_coro(automator.fill_application(url, profile))
                     if res["error"]:
@@ -460,7 +494,6 @@ with tab3:
         for item in all_rows:
             i_id, i_comp, i_role, i_plat, i_stat, i_url, i_date = item
             
-            # Dynamic styling for status pills
             stat_color = "#3b82f6" if i_stat == "Pending" else "#22c55e" if i_stat == "Submitted" else "#eab308"
             
             with st.container():
@@ -469,7 +502,6 @@ with tab3:
                     st.markdown(f"**#{i_id} • {i_comp}** — *{i_role}* <span style='color:{stat_color}; font-weight:bold;'>[{i_stat}]</span>", unsafe_allow_html=True)
                     st.caption(f"Platform: {i_plat} | Created: {i_date} | [View Posting ↗]({i_url})")
                 
-                # Inline quick actions
                 with c_btn1:
                     if i_stat != 'Submitted':
                         if st.button("✅ Done", key=f"tbl_done_{i_id}", use_container_width=True):
