@@ -11,7 +11,7 @@ from playwright.async_api import async_playwright
 # ==========================================
 # 1. DATABASE & STORAGE MANAGEMENT
 # ==========================================
-DB_FILE = "applications.db"
+DB_FILE = "ats_queue.db"
 PROFILE_FILE = "candidate_profile.json"
 SCREENSHOT_PATH = "latest_view.png"
 
