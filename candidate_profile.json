@@ -1,76 +1,30 @@
-{
+﻿{
   "full_name": "Joshua Jason Hanflink",
+  "first_name": "Joshua",
+  "middle_name": "Jason",
+  "last_name": "Hanflink",
   "email": "jjhanflink@gmail.com",
   "phone": "336-929-6685",
-  "location": "Raleigh, NC",
-  "linkedin_url": "https://www.linkedin.com/in/joshua-hanflink",
-  "github_url": "https://github.com/jjhanflink",
-  "portfolio_url": "https://jjhanflink.github.io",
-  "university": "North Carolina State University",
-  "degree": "B.S. in Electrical & Computer Engineering (Double Major)",
-  "gpa": "3.45",
-  "grad_date": "December 2027",
+  "location": "Raleigh, North Carolina",
+  "city": "Raleigh",
+  "state": "North Carolina",
+  "zip": "27606",
+  "linkedin": "https://www.linkedin.com/in/joshua-hanflink",
+  "github": "https://github.com/jjhanflink",
+  "portfolio": "https://jjhanflink.github.io",
+  "school": "North Carolina State University",
+  "degree": "B.S. in Electrical Engineering & Computer Engineering",
+  "major": "Electrical and Computer Engineering",
+  "grad_date": "12/2027",
+  "gpa": "3.8",
+  "gender": "Male",
+  "ethnicity": "Hispanic or Latino",
+  "race_fallback": "White",
+  "veteran_status": "I am not a protected veteran",
+  "disability_status": "Yes, I have a disability, or have had one in the past",
+  "us_citizen": "Yes",
   "work_authorized": "Yes",
-  "sponsorship_required": "No",
-  "experiences": [
-    {
-      "company": "Northrop Grumman",
-      "role": "Virtual Engineering Intern",
-      "location": "Remote",
-      "start_date": "06/2026",
-      "end_date": "08/2026",
-      "domain": "semiconductor",
-      "bullets": [
-        "Completed PRR and 8D training.",
-        "Evaluated packaging reliability."
-      ]
-    },
-    {
-      "company": "ASCEND Research",
-      "role": "Hardware Researcher (3D Imaging)",
-      "location": "Raleigh, NC",
-      "start_date": "05/2026",
-      "end_date": "08/2026",
-      "domain": "hardware",
-      "bullets": [
-        "Architected 24V DC-DC power distributions.",
-        "Hand-soldered multi-layer perfboards."
-      ]
-    },
-    {
-      "company": "ASCEND Research",
-      "role": "Researcher (TCAD Automation)",
-      "location": "Raleigh, NC",
-      "start_date": "05/2025",
-      "end_date": "08/2025",
-      "domain": "semiconductor",
-      "bullets": [
-        "Engineered Python/Streamlit GDSII-to-TCAD automation.",
-        "Automated Victory Process models."
-      ]
-    },
-    {
-      "company": "VIP Foundry - NCSU",
-      "role": "Cleanroom Researcher",
-      "location": "Raleigh, NC",
-      "start_date": "01/2025",
-      "end_date": "Present",
-      "domain": "semiconductor",
-      "bullets": [
-        "Operated MA6 aligners and CHA Mark 40 evaporators.",
-        "Conducted C-V testing."
-      ]
-    },
-    {
-      "company": "NCSU Engineering",
-      "role": "Engineering Ambassador",
-      "location": "Raleigh, NC",
-      "start_date": "08/2024",
-      "end_date": "Present",
-      "domain": "leadership",
-      "bullets": [
-        "Mentored students and hosted technical panels."
-      ]
-    }
-  ]
+  "sponsorship_needed": "No",
+  "work_onsite": "Yes",
+  "relocate": "Yes"
 }
