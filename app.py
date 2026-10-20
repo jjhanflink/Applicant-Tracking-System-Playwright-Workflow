@@ -3,6 +3,7 @@ import re
 import json
 import sqlite3
 import asyncio
+import requests
 from datetime import datetime
 from urllib.parse import urlparse
 import streamlit as st
@@ -12,9 +13,6 @@ DB_FILE = "ats_queue.db"
 PROFILE_FILE = "candidate_profile.json"
 SCREENSHOT_PATH = "latest_view.png"
 
-# ==========================================
-# 1. DATABASE & AUTO-MIGRATION
-# ==========================================
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -48,12 +46,13 @@ def get_db_connection():
 def load_profile():
     default_profile = {
         "full_name": "Joshua Jason Hanflink",
+        "signature_name": "Joshua Hanflink",
         "first_name": "Joshua",
         "middle_name": "Jason",
         "last_name": "Hanflink",
         "email": "jjhanflink@gmail.com",
-        "phone": "336-929-6685",
-        "location": "Raleigh, North Carolina",
+        "phone": "3369296685",
+        "location": "Raleigh, NC, USA",
         "city": "Raleigh",
         "state": "North Carolina",
         "zip": "27606",
@@ -64,17 +63,16 @@ def load_profile():
         "degree": "B.S. in Electrical Engineering & Computer Engineering",
         "major": "Electrical and Computer Engineering",
         "grad_date": "12/2027",
-        "grad_month": "December",
-        "grad_year": "2027",
         "gpa": "3.8",
         "gender": "Male",
         "ethnicity": "Hispanic or Latino",
         "race_fallback": "White",
         "veteran_status": "I am not a protected veteran",
         "disability_status": "Yes, I have a disability, or have had one in the past",
-        "us_citizen": "Yes",
+        "us_person": "Yes",
         "work_authorized": "Yes",
         "sponsorship_needed": "No",
+        "relatives_employed": "No",
         "work_onsite": "Yes",
         "relocate": "Yes",
         "over_18": "Yes"
@@ -110,12 +108,51 @@ def parse_fallback_company(url: str) -> str:
     cand = domain.split('.')[0]
     return cand.capitalize() if cand else "Engineering Employer"
 
-# ==========================================
-# 2. ZERO-TOUCH PLAYWRIGHT ENGINE
-# ==========================================
+def ask_llama_for_unanswered(questions: list, profile: dict, api_key: str) -> dict:
+    if not api_key or not questions:
+        return {}
+    prompt = f"""You are an automated job application assistant for Joshua Jason Hanflink.
+Candidate Profile:
+{json.dumps(profile, indent=2)}
+
+Strict Rules:
+1. Ethnicity/Race: Always select 'Hispanic or Latino' if available. Only select 'White' if 'Hispanic or Latino' is NOT an option.
+2. US Person / Citizen / Authorized to work / Onsite / Relocate / 18+: 'Yes'.
+3. Visa Sponsorship needed now or in future: 'No'.
+4. Relatives/Family employed at company: 'No'.
+5. Leave conditional follow-ups (like 'If yes, specify...') completely blank ("").
+6. For dropdowns/radios, pick the EXACT string from the provided 'options' list.
+7. If a question requires specific personal information not in the profile, set the value to "NEEDS_HUMAN".
+
+Unanswered Form Questions:
+{json.dumps(questions, indent=2)}
+
+Return ONLY a valid JSON object mapping the exact question 'label' to the chosen answer string."""
+
+    try:
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.0,
+                "response_format": {"type": "json_object"}
+            },
+            timeout=15
+        )
+        if resp.status_code == 200:
+            content = resp.json()["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+            return {k: v for k, v in parsed.items() if v and v != "NEEDS_HUMAN"}
+    except Exception:
+        pass
+    return {}
+
 class ATSAutomator:
-    def __init__(self, headless: bool = True):
+    def __init__(self, headless: bool = True, groq_api_key: str = ""):
         self.headless = headless
+        self.groq_api_key = groq_api_key
 
     async def accept_cookies(self, page):
         cookie_selectors = [
@@ -135,7 +172,7 @@ class ATSAutomator:
                 btn = await page.query_selector(sel)
                 if btn and await btn.is_visible():
                     await btn.evaluate("el => el.click()")
-                    await asyncio.sleep(0.6)
+                    await asyncio.sleep(0.5)
                     break
             except Exception:
                 pass
@@ -144,13 +181,12 @@ class ATSAutomator:
         try:
             total_height = await page.evaluate("document.body.scrollHeight")
             current_pos = 0
-            step = 450
             while current_pos < total_height:
-                current_pos += step
+                current_pos += 450
                 await page.evaluate(f"window.scrollTo(0, {current_pos})")
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.18)
                 total_height = await page.evaluate("document.body.scrollHeight")
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.4)
         except Exception:
             pass
 
@@ -167,22 +203,6 @@ class ATSAutomator:
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(2)
         await self.accept_cookies(page)
-
-        if "myworkdayjobs.com" in url:
-            wd_selectors = [
-                "[data-automation-id='applyExternal']",
-                "[data-automation-id='applyWithWorkday']",
-                "a[data-automation-id='applyExternal']"
-            ]
-            for wd_sel in wd_selectors:
-                btn = await page.query_selector(wd_sel)
-                if btn:
-                    try:
-                        await btn.evaluate("el => el.click()")
-                        await asyncio.sleep(4)
-                        return
-                    except Exception:
-                        pass
 
         has_form = await page.query_selector("input[type='text'], input[type='email'], input[name='name']")
         if not has_form:
@@ -224,7 +244,6 @@ class ATSAutomator:
         filled = 0
         await self.accept_cookies(page)
 
-        # 1. RESUME FIRST (Wait out Lever/Greenhouse parsing lock)
         if os.path.exists("resume.pdf"):
             file_inputs = await page.query_selector_all("input[type='file']")
             for f_in in file_inputs:
@@ -234,7 +253,7 @@ class ATSAutomator:
                         await f_in.set_input_files("resume.pdf")
                         filled += 1
                         try:
-                            await page.wait_for_selector("text='Analyzing resume'", state="hidden", timeout=12000)
+                            await page.wait_for_selector("text='Analyzing resume'", state="hidden", timeout=14000)
                         except Exception:
                             pass
                         await asyncio.sleep(1.2)
@@ -244,7 +263,6 @@ class ATSAutomator:
 
         await self.stepped_scroll(page)
 
-        # 2. STANDARD IDENTITY & URL INPUTS
         full_name_el = await page.query_selector("input[name='name'], input[aria-label*='Full Name' i]")
         if full_name_el:
             await full_name_el.fill(profile.get("full_name", "Joshua Jason Hanflink"))
@@ -262,7 +280,7 @@ class ATSAutomator:
         field_map = [
             (["input[name='email']", "input[type='email']", "input[id*='email' i]"], profile.get("email", "")),
             (["input[name='phone']", "input[type='tel']", "input[id*='phone' i]"], profile.get("phone", "")),
-            (["input[name='org']", "input[id*='org' i]", "input[name*='company' i]", "input[aria-label*='Current company' i]", "input[aria-label*='School' i]", "input[name*='school' i]"], profile.get("school", "")),
+            (["input[name='org']", "input[id*='org' i]", "input[name*='company' i]", "input[aria-label*='Current company' i]", "input[name*='school' i]"], profile.get("school", "")),
             (["input[name='urls[LinkedIn]']", "input[name*='linkedin' i]", "input[aria-label*='LinkedIn' i]"], profile.get("linkedin", "")),
             (["input[name='urls[GitHub]']", "input[name*='github' i]", "input[aria-label*='GitHub' i]"], profile.get("github", "")),
             (["input[name='urls[Portfolio]']", "input[name='urls[Other]']", "input[name*='portfolio' i]", "input[name*='website' i]"], profile.get("portfolio", ""))
@@ -280,11 +298,10 @@ class ATSAutomator:
                     except Exception:
                         pass
 
-        # Location with autocomplete lock
         loc_el = await page.query_selector("input[name*='location' i], input[id*='location' i], input[aria-label*='location' i]")
         if loc_el and await loc_el.is_visible():
             try:
-                await loc_el.fill(profile.get("location", "Raleigh, North Carolina"))
+                await loc_el.fill(profile.get("location", "Raleigh, NC, USA"))
                 await asyncio.sleep(0.8)
                 await loc_el.press("ArrowDown")
                 await loc_el.press("Enter")
@@ -293,7 +310,6 @@ class ATSAutomator:
             except Exception:
                 pass
 
-        # 3. SMART QUESTION & EEO COMPLIANCE MATRIX (<select> Dropdowns)
         selects = await page.query_selector_all("select")
         for s_el in selects:
             try:
@@ -310,24 +326,18 @@ class ATSAutomator:
                 }""")).strip()
                 q_lower = q_text.lower()
 
-                # Check user-supplied custom answers first
                 matched_custom = False
                 for c_question, c_val in custom_answers.items():
                     if c_val and c_question.lower()[:30] in q_lower:
-                        await self._match_and_select_option(s_el, [c_val.lower()])
-                        filled += 1
-                        matched_custom = True
-                        break
+                        if await self._match_and_select_option(s_el, [c_val.lower()]):
+                            filled += 1
+                            matched_custom = True
+                            break
                 if matched_custom:
                     continue
 
-                # Ethnicity / Race Two-Tier Rule:
-                # Priority 1: Select "Hispanic or Latino" if present
-                # Priority 2: If asking about Hispanic/Latino as Yes/No, select "Yes"
-                # Priority 3: If Race dropdown excludes Hispanic/Latino, select "White"
                 if any(k in q_lower for k in ["hispanic", "latino", "ethnicity", "race", "racial"]):
-                    found_hisp = await self._match_and_select_option(s_el, ["hispanic", "latino"])
-                    if found_hisp:
+                    if await self._match_and_select_option(s_el, ["hispanic", "latino"]):
                         filled += 1
                         continue
                     if "hispanic" in q_lower or "latino" in q_lower:
@@ -337,45 +347,29 @@ class ATSAutomator:
                     if await self._match_and_select_option(s_el, ["white", "caucasian"], ["non-white"]):
                         filled += 1
                         continue
-
-                # Gender -> Male
                 elif "gender" in q_lower or "sex" in q_lower:
                     if await self._match_and_select_option(s_el, ["male", "man"], ["female", "woman", "non-binary"]):
                         filled += 1
-
-                # Veteran -> Not a protected veteran
                 elif "veteran" in q_lower or "military" in q_lower:
                     if await self._match_and_select_option(s_el, ["not a protected veteran", "not a veteran", "no, i am not", "i am not", "no"], ["yes, i am"]):
                         filled += 1
-
-                # Disability -> Yes, I have or have had a disability
                 elif "disability" in q_lower or "handicap" in q_lower:
                     if await self._match_and_select_option(s_el, ["yes, i have a disability", "yes, i have", "have had one in the past", "yes"]):
                         filled += 1
-
-                # Sponsorship -> No
-                elif "sponsor" in q_lower or "h-1b" in q_lower or "visa" in q_lower:
+                elif any(k in q_lower for k in ["sponsor", "h-1b", "visa", "relative", "family member"]):
                     if await self._match_and_select_option(s_el, ["no"], ["yes"]):
                         filled += 1
-
-                # US Citizen / US Person / Work Authorized / Onsite / Relocate / 18+ -> Yes
-                elif any(k in q_lower for k in ["authorized", "legally", "us person", "u.s. person", "citizen", "export", "on-site", "onsite", "relocat", "18 years", "fluent"]):
+                elif any(k in q_lower for k in ["authorized", "legally", "us person", "u.s. person", "citizen", "export", "on-site", "onsite", "relocat", "18 years"]):
                     if await self._match_and_select_option(s_el, ["yes", "u.s. citizen", "us citizen", "authorized"], ["no", "not authorized"]):
-                        filled += 1
-
-                # Degree / Education
-                elif "degree" in q_lower or "education" in q_lower:
-                    if await self._match_and_select_option(s_el, ["bachelor", "b.s.", "bs", "undergraduate"]):
                         filled += 1
             except Exception:
                 pass
 
-        # 4. RADIO BUTTONS & CHECKBOXES MATRIX
         radios = await page.query_selector_all("input[type='radio'], input[type='checkbox']")
         for r_el in radios:
             try:
                 group_txt = (await r_el.evaluate("""el => {
-                    const container = el.closest('fieldset, div.application-question, div.field, li, ul, div');
+                    const container = el.closest('li.application-question, div.application-question, fieldset, div.field, ul, div');
                     return container ? container.innerText : '';
                 }""")).lower()
                 opt_label = (await r_el.evaluate("""el => {
@@ -383,63 +377,44 @@ class ATSAutomator:
                     return lbl ? lbl.innerText : (el.value || '');
                 }""")).strip().lower()
 
-                # Custom answer match for radios
                 for c_question, c_val in custom_answers.items():
                     if c_val and c_question.lower()[:30] in group_txt and c_val.lower() in opt_label:
                         await r_el.evaluate("el => el.click()")
                         filled += 1
 
-                # Ethnicity / Race Radio Handling
                 if any(k in group_txt for k in ["hispanic", "latino", "ethnicity", "race"]):
-                    if "hispanic" in opt_label or "latino" in opt_label:
+                    if opt_label.startswith("hispanic or latino") or "hispanic or latino" in opt_label.split("\n")[0]:
                         await r_el.evaluate("el => el.click()")
                         filled += 1
-                    elif ("hispanic" in group_txt or "latino" in group_txt) and opt_label in ["yes", "true"]:
+                    elif ("are you hispanic" in group_txt) and opt_label in ["yes", "true"]:
                         await r_el.evaluate("el => el.click()")
                         filled += 1
-                    elif "hispanic" not in group_txt and ("white" in opt_label or "caucasian" in opt_label):
+                    elif "hispanic or latino" not in group_txt and opt_label.startswith("white"):
                         await r_el.evaluate("el => el.click()")
                         filled += 1
-
-                # Veteran Radio Handling
                 elif "veteran" in group_txt:
                     if any(k in opt_label for k in ["not a protected veteran", "not a veteran", "i am not", "no"]):
                         await r_el.evaluate("el => el.click()")
                         filled += 1
-
-                # Disability Radio Handling
                 elif "disability" in group_txt:
-                    if "yes" in opt_label or "have a disability" in opt_label:
+                    if opt_label.startswith("yes") or "have a disability" in opt_label:
                         await r_el.evaluate("el => el.click()")
                         filled += 1
-
-                # Gender Radio Handling
-                elif "gender" in group_txt:
-                    if opt_label in ["male", "man"]:
-                        await r_el.evaluate("el => el.click()")
-                        filled += 1
-
-                # Sponsorship -> No
-                elif "sponsor" in group_txt or "visa" in group_txt:
+                elif any(k in group_txt for k in ["sponsor", "visa", "family member", "relative", "currently employed with"]):
                     if opt_label == "no" or opt_label.startswith("no,"):
                         await r_el.evaluate("el => el.click()")
                         filled += 1
-
-                # US Person / Authorized / Onsite -> Yes
-                elif any(k in group_txt for k in ["authorized", "us person", "u.s. person", "citizen", "on-site", "onsite", "relocat", "18 years"]):
-                    if opt_label == "yes" or opt_label.startswith("yes,") or "u.s. citizen" in opt_label:
+                elif any(k in group_txt for k in ["u.s. person", "us person", "export license", "authorized", "citizen", "on-site", "onsite", "relocat"]):
+                    if opt_label == "yes" or opt_label.startswith("yes,"):
                         await r_el.evaluate("el => el.click()")
                         filled += 1
-
-                # Certify / Consent / Privacy Checkboxes
-                elif any(k in group_txt for k in ["certify", "acknowledge", "agree", "privacy", "consent", "accurate"]):
+                elif any(k in group_txt for k in ["certify", "acknowledge", "agree", "proprietary information", "applicant authorization", "terms stated above", "privacy"]):
                     if await r_el.get_attribute("type") == "checkbox" and not await r_el.is_checked():
                         await r_el.evaluate("el => el.click()")
                         filled += 1
             except Exception:
                 pass
 
-        # 5. TEXT INPUTS FOR DATES, GRADUATION, GPA & CUSTOM ANSWERS
         text_inputs = await page.query_selector_all("input[type='text'], input[type='number'], textarea")
         today_str = datetime.now().strftime("%m/%d/%Y")
         for t_el in text_inputs:
@@ -448,12 +423,14 @@ class ATSAutomator:
                     continue
                 curr_val = (await t_el.input_value()).strip()
                 q_label = (await t_el.evaluate("""el => {
-                    const lbl = el.closest('label') || document.querySelector(`label[for="${el.id}"]`) || el.closest('div.application-question, div.field, li, div');
-                    return lbl ? lbl.innerText : (el.placeholder || el.name || '');
+                    const container = el.closest('li.application-question, div.application-question, div.field, label, div');
+                    return container ? container.innerText.split('\\n')[0] : (el.placeholder || el.name || '');
                 }""")).strip()
                 q_low = q_label.lower()
 
-                # Custom answer injection
+                if any(k in q_low for k in ["if yes", "please specify", "if applicable", "additional information"]):
+                    continue
+
                 for c_question, c_val in custom_answers.items():
                     if c_val and c_question.lower()[:30] in q_low:
                         await t_el.fill(str(c_val))
@@ -464,26 +441,17 @@ class ATSAutomator:
                 if curr_val:
                     continue
 
-                if "graduation" in q_low or "grad date" in q_low or "expected completion" in q_low:
-                    await t_el.fill(profile.get("grad_date", "12/2027"))
+                if q_low in ["name", "name *"] or "signature" in q_low:
+                    await t_el.fill(profile.get("signature_name", "Joshua Hanflink"))
                     filled += 1
-                elif "today's date" in q_low or "signature date" in q_low or ("date" in q_low and "birth" not in q_low and "start" not in q_low):
+                elif q_low in ["date", "date *"] or "today's date" in q_low:
                     await t_el.fill(today_str)
                     filled += 1
-                elif "start date" in q_low or "available" in q_low:
-                    await t_el.fill("01/2027")
+                elif "graduation" in q_low or "grad date" in q_low:
+                    await t_el.fill(profile.get("grad_date", "12/2027"))
                     filled += 1
-                elif "gpa" in q_low or "grade point" in q_low:
+                elif "gpa" in q_low:
                     await t_el.fill(profile.get("gpa", "3.8"))
-                    filled += 1
-                elif "signature" in q_low or "full legal name" in q_low:
-                    await t_el.fill(profile.get("full_name", "Joshua Jason Hanflink"))
-                    filled += 1
-                elif "city" in q_low:
-                    await t_el.fill(profile.get("city", "Raleigh"))
-                    filled += 1
-                elif "postal" in q_low or "zip" in q_low:
-                    await t_el.fill(profile.get("zip", "27606"))
                     filled += 1
             except Exception:
                 pass
@@ -494,7 +462,6 @@ class ATSAutomator:
         unanswered = []
         seen_labels = set()
 
-        # 1. Check unfilled <select> dropdowns
         selects = await page.query_selector_all("select")
         for s_el in selects:
             try:
@@ -504,7 +471,7 @@ class ATSAutomator:
                 sel_text = (await s_el.evaluate("el => el.options[el.selectedIndex]?.text || ''")).strip().lower()
                 if not val or sel_text in ["select...", "select one", "choose", "none", "--", ""]:
                     q_label = (await s_el.evaluate("""el => {
-                        const lbl = document.querySelector(`label[for="${el.id}"]`) || el.closest('div.application-question, div.field, fieldset, label, li');
+                        const lbl = document.querySelector(`label[for="${el.id}"]`) || el.closest('li.application-question, div.application-question, div.field, fieldset, label');
                         return lbl ? lbl.innerText.split('\\n')[0] : (el.name || 'Dropdown Question');
                     }""")).strip()
                     opts = await s_el.evaluate("el => Array.from(el.options).map(o => o.text.trim()).filter(t => t && !['select...', 'select one', '--'].includes(t.toLowerCase()))")
@@ -514,7 +481,6 @@ class ATSAutomator:
             except Exception:
                 pass
 
-        # 2. Check unfilled required text inputs / textareas
         inputs = await page.query_selector_all("input[type='text'], input[type='number'], textarea")
         for i_el in inputs:
             try:
@@ -523,9 +489,12 @@ class ATSAutomator:
                 val = (await i_el.input_value()).strip()
                 if not val:
                     q_label = (await i_el.evaluate("""el => {
-                        const lbl = document.querySelector(`label[for="${el.id}"]`) || el.closest('div.application-question, div.field, label, li');
+                        const lbl = document.querySelector(`label[for="${el.id}"]`) || el.closest('li.application-question, div.application-question, div.field, label');
                         return lbl ? lbl.innerText.split('\\n')[0] : (el.placeholder || el.name || '');
                     }""")).strip()
+                    q_low = q_label.lower()
+                    if any(skip in q_low for skip in ["if yes", "please specify", "additional information", "cover letter", "other website", "twitter", "portfolio"]):
+                        continue
                     if q_label and q_label not in seen_labels and len(q_label) > 2:
                         seen_labels.add(q_label)
                         unanswered.append({"label": q_label[:120], "type": "text", "options": []})
@@ -541,7 +510,6 @@ class ATSAutomator:
             "role": "Engineering Candidate Role",
             "platform": detect_platform(url),
             "cover_letter_allowed": "No",
-            "unanswered": [],
             "error": None
         }
         try:
@@ -569,33 +537,25 @@ class ATSAutomator:
                         result["company"] = p_parts[1].split("-")[0].split("|")[0].strip()
                     elif " - " in page_title:
                         p_parts = page_title.split(" - ")
-                        result["role"] = p_parts[0].strip()
-                        result["company"] = p_parts[1].strip()
+                        result["company"] = p_parts[0].strip()
+                        result["role"] = p_parts[1].strip()
                     elif page_title:
                         result["role"] = page_title.strip()
-
-                cl_elements = await page.query_selector_all("input[type='file'], textarea, label")
-                for el in cl_elements:
-                    txt = (await el.inner_text()).lower() if el else ""
-                    if "cover letter" in txt:
-                        result["cover_letter_allowed"] = "Yes"
-                        break
 
                 await page.screenshot(path=SCREENSHOT_PATH, full_page=True)
                 await browser.close()
         except Exception as e:
             result["error"] = str(e)
-            result["company"] = parse_fallback_company(url)
-            result["role"] = "Manual Review Required"
         return result
 
     async def execute_full_application(self, url: str, profile: dict, custom_answers: dict = None, auto_submit: bool = True):
-        custom_answers = custom_answers or {}
+        custom_answers = dict(custom_answers or {})
         result = {
             "status": "In Progress",
             "error": None,
             "fields_filled": 0,
             "unanswered": [],
+            "llama_mapped": 0,
             "submitted": False
         }
         try:
@@ -610,35 +570,31 @@ class ATSAutomator:
                 page = await context.new_page()
                 await self._navigate_to_form(page, url)
 
-                # Multi-page loop (up to 4 steps for Workday / multi-step portals)
-                for _ in range(4):
-                    filled = await self._fill_single_page(page, profile, custom_answers)
-                    result["fields_filled"] += filled
+                filled = await self._fill_single_page(page, profile, custom_answers)
+                result["fields_filled"] += filled
 
-                    next_btn = await page.query_selector(
-                        "button:has-text('Next'), button:has-text('Continue'), button:has-text('Save and Continue'), [data-automation-id='bottom-navigation-next-button']"
-                    )
-                    if next_btn and await next_btn.is_visible():
-                        await next_btn.evaluate("el => el.click()")
-                        await asyncio.sleep(3)
-                    else:
-                        break
-
-                # Scrape any remaining unanswered questions for the Streamlit UI Bridge
                 unanswered = await self._scrape_unanswered_questions(page)
+
+                if unanswered and self.groq_api_key:
+                    llama_answers = ask_llama_for_unanswered(unanswered, profile, self.groq_api_key)
+                    if llama_answers:
+                        result["llama_mapped"] = len(llama_answers)
+                        custom_answers.update(llama_answers)
+                        filled_2 = await self._fill_single_page(page, profile, custom_answers)
+                        result["fields_filled"] += filled_2
+                        unanswered = await self._scrape_unanswered_questions(page)
+
                 result["unanswered"] = unanswered
 
-                # Attempt Zero-Touch Cloud Submission if requested
-                if auto_submit:
+                if auto_submit and not unanswered:
                     submit_selectors = [
                         "button[type='submit']",
                         "input[type='submit']",
                         "button:has-text('Submit application')",
                         "button:has-text('Submit Application')",
-                        "button:has-text('Submit')",
+                        "button:has-text('SUBMIT APPLICATION')",
                         "[data-qa='btn-submit']",
-                        "#submit_app",
-                        "[data-automation-id='bottom-navigation-next-button']"
+                        "#submit_app"
                     ]
                     for sub_sel in submit_selectors:
                         sub_btn = await page.query_selector(sub_sel)
@@ -649,11 +605,9 @@ class ATSAutomator:
 
                     body_txt = (await page.inner_text("body")).lower()
                     cur_url = page.url.lower()
-                    if any(k in body_txt for k in ["application submitted", "thank you for applying", "thanks for applying", "received your application", "successfully submitted"]) or "confirmation" in cur_url or "thanks" in cur_url:
+                    if any(k in body_txt for k in ["application submitted", "thank you for applying", "thanks for applying", "received your application"]) or "confirmation" in cur_url or "thanks" in cur_url:
                         result["submitted"] = True
                         result["status"] = "Submitted"
-                    elif unanswered:
-                        result["status"] = "Manual Action Needed"
                     else:
                         result["status"] = "Manual Action Needed"
                 else:
@@ -674,19 +628,12 @@ def run_async_coro(coro):
         asyncio.set_event_loop(loop)
         return loop.run_until_complete(coro)
 
-# ==========================================
-# 3. STREAMLIT USER INTERFACE
-# ==========================================
-st.set_page_config(page_title="Zero-Touch ATS Auto-Applier", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Llama 3.3 ATS Auto-Applier", page_icon="⚡", layout="wide")
 
-st.markdown("""
-<style>
-    .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
-    .stButton>button { border-radius: 8px; font-family: monospace; font-weight: 600; }
-</style>
-""", unsafe_allow_html=True)
+st.sidebar.title("⚙️ Llama 3.3 ATS Engine")
+default_groq_key = st.secrets.get("GROQ_API_KEY", "") if hasattr(st, "secrets") else os.environ.get("GROQ_API_KEY", "")
+groq_key = st.sidebar.text_input("🦙 Free Groq Llama 3.3 API Key:", value=default_groq_key, type="password", help="Get a free key at console.groq.com/keys")
 
-st.sidebar.title("⚙️ Zero-Touch ATS Engine")
 engine_mode = st.sidebar.radio("Browser Execution Mode:", ["Headless (Cloud Safe)", "Headed (Visible Window - Local Only)"], index=0)
 is_headless = "Headless" in engine_mode
 
@@ -716,13 +663,12 @@ if st.sidebar.button("🧹 Purge Database (Full Reset)"):
             os.remove(SCREENSHOT_PATH)
         except Exception:
             pass
-    st.sidebar.success("Database wiped clean!")
     st.rerun()
 
-st.title("⚡ Zero-Touch ATS Auto-Applier & Dynamic Question Bridge")
-st.caption("Automated Cloud Submission • Hispanic/Latino Priority EEO Matrix • Live Unanswered Question Scraper")
+st.title("⚡ Meta Llama 3.3 ATS Auto-Applier & Question Bridge")
+st.caption("Calibrated on CesiumAstro/Lever • Serverless Groq Llama-3.3-70B Form Mapper • Zero Local Storage")
 
-tab1, tab2, tab3 = st.tabs(["1. Add Jobs to Queue", "2. Process Queue & Dynamic Bridge", "3. Application Tracker"])
+tab1, tab2, tab3 = st.tabs(["1. Add Jobs to Queue", "2. Process Queue & Llama Bridge", "3. Application Tracker"])
 
 with tab1:
     st.subheader("1. Add Applications to Queue")
@@ -738,14 +684,14 @@ with tab1:
             st.error("Please enter a valid job URL.")
         else:
             with st.spinner("Probing URL and resolving application form..."):
-                automator = ATSAutomator(headless=is_headless)
+                automator = ATSAutomator(headless=is_headless, groq_api_key=groq_key)
                 extracted = run_async_coro(automator.extract_title_and_probe(input_url.strip()))
 
                 final_company = custom_company.strip() or extracted["company"]
                 final_role = custom_role.strip() or extracted["role"]
                 final_platform = extracted["platform"]
                 cl_status = extracted["cover_letter_allowed"]
-                notes = extracted["error"] if extracted["error"] else "Form ready for Zero-Touch execution"
+                notes = extracted["error"] if extracted["error"] else "Form ready for Llama 3.3 Zero-Touch execution"
 
                 try:
                     conn = get_db_connection()
@@ -761,7 +707,7 @@ with tab1:
                     st.warning("This job URL is already in your database.")
 
 with tab2:
-    st.subheader("2. Zero-Touch Cloud Execution & Unanswered Question Bridge")
+    st.subheader("2. Zero-Touch Cloud Execution & Llama Question Bridge")
 
     conn = get_db_connection()
     c = conn.cursor()
@@ -787,7 +733,7 @@ with tab2:
         <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid #334155; padding: 1.25rem; border-radius: 12px; margin-bottom: 1rem;">
             <h3 style="margin-top:0; color:#38bdf8;">{role}</h3>
             <h4 style="color:#94a3b8; margin-bottom: 0.4rem;">{company} • <span style="color:#a855f7;">{platform}</span></h4>
-            <p style="font-size: 0.85rem; color:#cbd5e1; margin-bottom: 0.3rem;"><b>Status:</b> <code>{status}</code> | <b>Cover Letter Allowed:</b> {cl_allowed}</p>
+            <p style="font-size: 0.85rem; color:#cbd5e1; margin-bottom: 0.3rem;"><b>Status:</b> <code>{status}</code></p>
             <p style="font-size: 0.85rem; color:#94a3b8; margin-bottom: 0;"><b>Diagnostics:</b> {notes}</p>
         </div>
         """, unsafe_allow_html=True)
@@ -796,7 +742,7 @@ with tab2:
         with col_link:
             st.markdown(f"""
             <a href="{url}" target="_blank" style="display:inline-block; width:100%; text-align:center; padding: 0.6rem 1rem; background-color: #0284c7; color: white; border-radius: 8px; font-weight: bold; text-decoration: none; font-family: monospace;">
-                🔗 Open Job Application in New Tab (Fallback) ↗
+                🔗 Open Job Application in New Tab ↗
             </a>
             """, unsafe_allow_html=True)
         with col_del:
@@ -807,15 +753,14 @@ with tab2:
                 conn.close()
                 st.rerun()
 
-        st.markdown("#### 🚀 Primary Zero-Touch Cloud Controls")
         c1, c2, c3 = st.columns(3)
         with c1:
-            if st.button("⚡ Zero-Touch Auto-Fill & Submit", use_container_width=True):
-                with st.spinner("Executing Zero-Touch Cloud Fill, EEO Matrix, and Auto-Submit..."):
-                    automator = ATSAutomator(headless=is_headless)
+            if st.button("⚡ Llama Auto-Fill & Submit", use_container_width=True):
+                with st.spinner("Executing Calibrated Fill + Meta Llama 3.3 Mapping + Auto-Submit..."):
+                    automator = ATSAutomator(headless=is_headless, groq_api_key=groq_key)
                     res = run_async_coro(automator.execute_full_application(url, profile, saved_custom_answers, auto_submit=True))
                     conn = get_db_connection()
-                    new_notes = res["error"] if res["error"] else f"Filled {res['fields_filled']} fields. Unanswered: {len(res['unanswered'])}"
+                    new_notes = res["error"] if res["error"] else f"Filled {res['fields_filled']} fields (Llama mapped {res['llama_mapped']}). Unanswered: {len(res['unanswered'])}"
                     conn.execute(
                         "UPDATE applications SET status=?, notes=?, unanswered_json=? WHERE id=?",
                         (res["status"], new_notes, json.dumps(res["unanswered"]), job_id)
@@ -824,12 +769,12 @@ with tab2:
                     conn.close()
                     st.rerun()
         with c2:
-            if st.button("🔍 Fill & Scan Only (No Submit)", use_container_width=True):
-                with st.spinner("Filling standard fields and scanning for unanswered questions..."):
-                    automator = ATSAutomator(headless=is_headless)
+            if st.button("🔍 Fill & Verify Only (No Submit)", use_container_width=True):
+                with st.spinner("Filling all fields and capturing full-page screenshot without clicking submit..."):
+                    automator = ATSAutomator(headless=is_headless, groq_api_key=groq_key)
                     res = run_async_coro(automator.execute_full_application(url, profile, saved_custom_answers, auto_submit=False))
                     conn = get_db_connection()
-                    new_notes = f"Scanned {res['fields_filled']} fields. Found {len(res['unanswered'])} custom questions."
+                    new_notes = f"Verified {res['fields_filled']} fields (Llama mapped {res['llama_mapped']}). Unanswered: {len(res['unanswered'])}"
                     conn.execute(
                         "UPDATE applications SET status='Manual Action Needed', notes=?, unanswered_json=? WHERE id=?",
                         (new_notes, json.dumps(res["unanswered"]), job_id)
@@ -838,17 +783,16 @@ with tab2:
                     conn.close()
                     st.rerun()
         with c3:
-            if st.button("✅ Manually Mark as Submitted", use_container_width=True):
+            if st.button("✅ Mark as Submitted", use_container_width=True):
                 conn = get_db_connection()
                 conn.execute("UPDATE applications SET status='Submitted' WHERE id=?", (job_id,))
                 conn.commit()
                 conn.close()
                 st.rerun()
 
-        # DYNAMIC REMOTE-DOM BRIDGE FOR MANUAL ACTION NEEDED
         if unanswered_list:
             st.markdown("---")
-            st.warning(f"⚠️ **Manual Input Needed ({len(unanswered_list)} Questions Detected):** Answer the scraped questions below and click **Inject Custom Answers & Auto-Submit**.")
+            st.warning(f"⚠️ **Manual Input Needed ({len(unanswered_list)} Questions):** Answer below and click **Inject & Submit**.")
             with st.form(key=f"bridge_form_{job_id}"):
                 updated_custom = dict(saved_custom_answers)
                 for idx, q_item in enumerate(unanswered_list):
@@ -869,11 +813,11 @@ with tab2:
                             updated_custom[q_lbl] = typed.strip()
 
                 if st.form_submit_button("⚡ Inject Custom Answers & Auto-Submit Now", use_container_width=True):
-                    with st.spinner("Re-launching cloud browser, injecting custom answers, and clicking Submit..."):
-                        automator = ATSAutomator(headless=is_headless)
+                    with st.spinner("Injecting custom answers and submitting..."):
+                        automator = ATSAutomator(headless=is_headless, groq_api_key=groq_key)
                         res = run_async_coro(automator.execute_full_application(url, profile, updated_custom, auto_submit=True))
                         conn = get_db_connection()
-                        new_notes = f"Custom answers injected ({res['fields_filled']} fields). Remaining unanswered: {len(res['unanswered'])}"
+                        new_notes = f"Injected {res['fields_filled']} fields. Remaining unanswered: {len(res['unanswered'])}"
                         conn.execute(
                             "UPDATE applications SET status=?, notes=?, unanswered_json=?, custom_answers_json=? WHERE id=?",
                             (res["status"], new_notes, json.dumps(res["unanswered"]), json.dumps(updated_custom), job_id)
