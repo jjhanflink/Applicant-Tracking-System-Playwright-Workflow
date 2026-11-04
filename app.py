@@ -1,4 +1,15 @@
-﻿import os
+﻿import subprocess
+import sys
+
+def ensure_playwright_browsers():
+    try:
+        # Check if browser binaries exist, install if missing
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+    except Exception as e:
+        print(f"Error ensuring Playwright browsers: {e}")
+
+ensure_playwright_browsers()
+import os
 import re
 import json
 import sqlite3
@@ -939,3 +950,4 @@ with tab3:
                         conn.close()
                         st.rerun()
                 st.markdown("<hr style='margin: 0.4rem 0; border-color: #1e293b;'/>", unsafe_allow_html=True)
+
