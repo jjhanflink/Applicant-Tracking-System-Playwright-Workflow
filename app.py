@@ -193,12 +193,12 @@ class ATSAutomator:
                 const labelEl = container.querySelector('.application-label, .text, label, legend, .section-headline, b, h4');
                 if (labelEl) {
                     const t = labelEl.innerText.replace(/\\s+/g, ' ').trim();
-                    if (t.length > 2) return t.slice(0, 200);
+                    if (t.length > 2) return t;
                 }
                 const clone = container.cloneNode(true);
                 clone.querySelectorAll('select, input, ul, .application-field, .options-list').forEach(n => n.remove());
                 const clean = clone.innerText.replace(/\\s+/g, ' ').trim();
-                return clean.length > 2 ? clean.slice(0, 200) : (fallbackEl.name || 'Question');
+                return clean.length > 2 ? clean : (fallbackEl.name || 'Question');
             }
 
             const questionBlocks = document.querySelectorAll('.application-question, .custom-question, fieldset, li.application-question');
@@ -219,21 +219,23 @@ class ATSAutomator:
                     });
                 });
 
-                const radios = block.querySelectorAll('input[type="radio"]');
+                const radios = block.querySelectorAll('input[type="radio"], input[type="checkbox"]:not([name*="consent"])');
                 if (radios.length > 0) {
                     const qid = 'q_' + (qCounter++);
                     const opts = [];
                     let isFilled = false;
+                    let isMulti = false;
                     radios.forEach(rad => {
                         rad.setAttribute('data-ats-qid', qid);
                         if (rad.checked) isFilled = true;
+                        if (rad.type === 'checkbox') isMulti = true;
                         const rLbl = rad.closest('label') || document.querySelector(`label[for="${rad.id}"]`);
                         const oTxt = rLbl ? rLbl.innerText.trim().split('\\n')[0] : rad.value;
                         if (oTxt) opts.push(oTxt);
                     });
                     results.push({
                         qid: qid,
-                        type: 'radio',
+                        type: isMulti ? 'multiselect' : 'radio',
                         label: extractPrompt(block, radios[0]),
                         options: opts,
                         filled: isFilled
@@ -254,7 +256,7 @@ class ATSAutomator:
                 });
             });
 
-            document.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+            document.querySelectorAll('input[type="checkbox"][name*="consent"], input[type="checkbox"][required]').forEach(cb => {
                 const qid = 'q_' + (qCounter++);
                 cb.setAttribute('data-ats-qid', qid);
                 const cBlock = cb.closest('li, div.application-question, fieldset, label');
@@ -349,13 +351,7 @@ class ATSAutomator:
             if qid in qid_answers:
                 continue
 
-            if "legal name" in low or low in ["name", "name *"]:
-                qid_answers[qid] = profile.get("full_name")
-
-            elif "authorized to work" in low:
-                qid_answers[qid] = profile.get("work_authorized", "Yes")
-
-            elif "school or university" in low:
+            if "school or university" in low:
                 for o in opts:
                     if "north carolina state" in o.lower() or "nc state" in o.lower():
                         qid_answers[qid] = o
@@ -475,6 +471,41 @@ class ATSAutomator:
                     if clicked:
                         filled += 1
 
+                elif qtype == "multiselect":
+                     if isinstance(ans, list):
+                         for a in ans:
+                             await page.evaluate("""([qid, target]) => {
+                                 const tLow = target.toLowerCase().trim();
+                                 const checkboxes = document.querySelectorAll(`input[type="checkbox"][data-ats-qid="${qid}"]`);
+                                 for (const cb of checkboxes) {
+                                     const lbl = cb.closest('label') || document.querySelector(`label[for="${cb.id}"]`);
+                                     const oTxt = (lbl ? lbl.innerText : (cb.value || '')).toLowerCase().trim();
+                                     if (oTxt.includes(tLow) || tLow.includes(oTxt)) {
+                                         if (!cb.checked) {
+                                             cb.click();
+                                             cb.checked = true;
+                                             cb.dispatchEvent(new Event('change', { bubbles: true }));
+                                         }
+                                     }
+                                 }
+                             }""", [qid, str(a)])
+                     else:
+                          await page.evaluate("""([qid, target]) => {
+                                 const tLow = target.toLowerCase().trim();
+                                 const checkboxes = document.querySelectorAll(`input[type="checkbox"][data-ats-qid="${qid}"]`);
+                                 for (const cb of checkboxes) {
+                                     const lbl = cb.closest('label') || document.querySelector(`label[for="${cb.id}"]`);
+                                     const oTxt = (lbl ? lbl.innerText : (cb.value || '')).toLowerCase().trim();
+                                     if (oTxt.includes(tLow) || tLow.includes(oTxt)) {
+                                         if (!cb.checked) {
+                                             cb.click();
+                                             cb.checked = true;
+                                             cb.dispatchEvent(new Event('change', { bubbles: true }));
+                                         }
+                                     }
+                                 }
+                             }""", [qid, str(ans)])
+                     filled += 1
                 elif qtype == "checkbox" and str(ans).upper() == "CHECK":
                     cb_el = await page.query_selector(f"input[type='checkbox'][data-ats-qid='{qid}']")
                     if cb_el and not await cb_el.is_checked():
@@ -507,9 +538,9 @@ class ATSAutomator:
             if lbl and lbl not in seen:
                 seen.add(lbl)
                 unanswered.append({
-                    "label": lbl[:140],
+                    "label": lbl,
                     "type": item["type"],
-                    "options": item.get("options", [])[:25]
+                    "options": item.get("options", [])
                 })
         return unanswered
 
@@ -601,8 +632,8 @@ class ATSAutomator:
                 else:
                     result["status"] = "Manual Action Needed" if unanswered else "Pending"
 
-                await asyncio.sleep(1.0)
-                await page.screenshot(path=SCREENSHOT_PATH, full_page=True)
+                await asyncio.sleep(3.0)
+                await page.screenshot(path=SCREENSHOT_PATH, full_page=True, animations="disabled")
                 await browser.close()
         except Exception as e:
             result["error"] = str(e)
@@ -653,7 +684,7 @@ if st.sidebar.button("🧹 Purge Database (Full Reset)"):
     st.rerun()
 
 st.title("⚡ Meta Llama 3.3 ATS Auto-Applier")
-st.caption("Versatile Architecture: Universal Mapping + Explicit Custom Fallbacks")
+st.caption("UI Fixes: Multiselect for location preferences, full-length questions, and headed screenshots")
 
 tab1, tab2, tab3 = st.tabs(["1. Add Jobs to Queue", "2. Process Queue & Llama Bridge", "3. Application Tracker"])
 
@@ -760,14 +791,17 @@ with tab2:
                     q_opts = q_item.get("options", [])
                     default_val = updated_custom.get(q_lbl, "")
 
-                    if q_type in ["select", "radio"] and q_opts:
+                    if q_type == "multiselect" and q_opts:
+                        chosen = st.multiselect(f"📌 {q_lbl}", q_opts, default=default_val if isinstance(default_val, list) else [], key=f"q_{job_id}_{idx}")
+                        updated_custom[q_lbl] = chosen
+                    elif q_type in ["select", "radio"] and q_opts:
                         opts_with_blank = ["-- Select Answer --"] + q_opts
                         sel_idx = opts_with_blank.index(default_val) if default_val in opts_with_blank else 0
                         chosen = st.selectbox(f"📌 {q_lbl}", opts_with_blank, index=sel_idx, key=f"q_{job_id}_{idx}")
                         if chosen != "-- Select Answer --":
                             updated_custom[q_lbl] = chosen
                     else:
-                        typed = st.text_area(f"📌 {q_lbl} (AI assisted essays welcome here)", value=default_val, key=f"q_{job_id}_{idx}", height=100)
+                        typed = st.text_area(f"📌 {q_lbl} (AI assisted essays welcome here)", value=default_val if isinstance(default_val, str) else "", key=f"q_{job_id}_{idx}", height=100)
                         if typed.strip():
                             updated_custom[q_lbl] = typed.strip()
 
