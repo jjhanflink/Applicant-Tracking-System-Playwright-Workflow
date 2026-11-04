@@ -1,82 +1,34 @@
-{
-  "identity": {
-    "full_name": "Joshua Jason Hanflink",
-    "first_name": "Joshua",
-    "middle_name": "Jason",
-    "last_name": "Hanflink",
-    "signature": "Joshua Hanflink",
-    "email": "jjhanflink@gmail.com",
-    "phone": "3369296685",
-    "phone_formatted": "336-929-6685",
-    "resume_path": "resume.pdf"
-  },
-  "addresses": {
-    "routing_policy": "Always default to current_address (Raleigh, NC 27606) for general location, city, mailing, or current address fields. ONLY use permanent_address (Greensboro, NC 27408) when a field explicitly asks for a Permanent, Home, or Legal/Tax address.",
-    "current_address": {
-      "label": "Current / School Address",
-      "street": "NC State University",
-      "city": "Raleigh",
-      "state": "NC",
-      "state_full": "North Carolina",
-      "zip": "27606",
-      "country": "United States",
-      "location_string": "Raleigh, NC, USA"
-    },
-    "permanent_address": {
-      "label": "Permanent / Home Address",
-      "street": "701 Blanton Place",
-      "city": "Greensboro",
-      "state": "NC",
-      "state_full": "North Carolina",
-      "zip": "27408",
-      "country": "United States",
-      "location_string": "701 Blanton Place, Greensboro, NC 27408"
-    }
-  },
-  "education": {
-    "school": "North Carolina State University",
-    "current_company_fallback": "North Carolina State University",
-    "degree": "B.S. Electrical & Computer Engineering",
-    "major": "Electrical and Computer Engineering",
-    "academic_standing": "Senior",
-    "gpa_exact": "3.45",
-    "gpa_rounded_bracket": "3.5",
-    "start_date": {
-      "mm_yyyy": "08/2023",
-      "mm_dd_yyyy": "08/15/2023",
-      "month": "08",
-      "month_name": "August",
-      "day": "15",
-      "year": "2023"
-    },
-    "graduation_date": {
-      "mm_yyyy": "12/2027",
-      "mm_dd_yyyy": "12/31/2027",
-      "month": "12",
-      "month_name": "December",
-      "day": "31",
-      "year": "2027"
-    },
-    "past_degrees_completed": "I have not yet completed a degree"
-  },
-  "links": {
-    "linkedin": "https://www.linkedin.com/in/joshua-hanflink",
-    "github": "https://github.com/jjhanflink",
-    "portfolio": "https://jjhanflink.github.io",
-    "website": "https://jjhanflink.github.io"
-  },
-  "work_authorization": {
-    "citizenship_status": "US Citizen",
-    "authorized_to_work_in_us": true,
-    "require_sponsorship_now_or_future": false,
-    "over_18": true,
-    "over_21": true
-  },
-  "eeo": {
-    "gender": "Male",
-    "hispanic_or_latino": "Yes",
-    "race_ethnicity": "Hispanic or Latino",
-    "veteran_status": "Not a protected veteran",
-    "disability_status": "Yes, I have a disability, or have had one in the past"
-  }
+﻿{
+  "full_name": "Joshua Jason Hanflink",
+  "signature_name": "Joshua Hanflink",
+  "first_name": "Joshua",
+  "middle_name": "Jason",
+  "last_name": "Hanflink",
+  "email": "jjhanflink@gmail.com",
+  "phone": "3369296685",
+  "location": "Raleigh, NC, USA",
+  "city": "Raleigh",
+  "state": "North Carolina",
+  "zip": "27606",
+  "linkedin": "http://www.linkedin.com/in/joshua-hanflink",
+  "github": "https://github.com/jjhanflink",
+  "portfolio": "https://jjhanflink.github.io",
+  "school": "North Carolina State University",
+  "degree": "B.S. in Electrical Engineering & Computer Engineering",
+  "major": "Electrical and Computer Engineering",
+  "academic_year": "Senior",
+  "gpa": "3.45",
+  "grad_date": "12/2027",
+  "gender": "Male",
+  "ethnicity": "Hispanic or Latino",
+  "race_fallback": "White (Not Hispanic or Latino)",
+  "veteran_status": "I am not a protected veteran",
+  "disability_status": "Yes, I have a disability, or have had one in the past",
+  "us_person": "Yes",
+  "work_authorized": "Yes",
+  "sponsorship_needed": "No",
+  "relatives_employed": "No",
+  "work_onsite": "Yes",
+  "relocate": "Yes",
+  "over_18": "Yes"
 }
