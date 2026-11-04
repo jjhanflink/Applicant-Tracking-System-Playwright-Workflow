@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import json
 import sqlite3
@@ -15,7 +15,7 @@ if sys.platform.startswith("win"):
 DB_PATH = "ats_queue.db"
 PROFILE_PATH = "candidate_profile.json"
 
-st.set_page_config(page_title="Zero-Touch ATS Auto-Applier", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Zero-Touch ATS Auto-Applier", page_icon="?", layout="wide")
 
 def init_db() -> None:
     with sqlite3.connect(DB_PATH) as conn:
@@ -97,7 +97,7 @@ def update_job_execution_state(job_id: int, result: Dict[str, Any], custom_answe
 
 def load_candidate_profile() -> Dict[str, Any]:
     path = Path(PROFILE_PATH)
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    return json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
 
 def run_async_task(coro):
     loop = asyncio.new_event_loop()
@@ -110,11 +110,11 @@ def run_async_task(coro):
 init_db()
 profile = load_candidate_profile()
 
-st.title("⚡ Zero-Touch ATS Auto-Applier")
+st.title("? Zero-Touch ATS Auto-Applier")
 st.caption("Playwright Async + Groq Llama 3.3 Semantic Mapping | Raleigh (Current) vs. Greensboro (Permanent)")
 
 with st.sidebar:
-    st.header("⚙️ Controls")
+    st.header("?? Controls")
     groq_api_key = st.text_input("Groq API Key", value=os.environ.get("GROQ_API_KEY", ""), type="password")
     headless_mode = st.toggle("Run Browser Headless", value=False)
     if profile:
@@ -122,7 +122,7 @@ with st.sidebar:
         st.markdown(f"**Default / School:** `{profile['addresses']['current_address']['location_string']}`")
         st.markdown(f"**Permanent:** `{profile['addresses']['permanent_address']['location_string']}`")
 
-tab_queue, tab_bridge = st.tabs(["📥 Tab 1: Job Queue", "🌉 Tab 2: The Manual Bridge & Verifier"])
+tab_queue, tab_bridge = st.tabs(["?? Tab 1: Job Queue", "?? Tab 2: The Manual Bridge & Verifier"])
 
 with tab_queue:
     st.subheader("Add Application URL")
@@ -131,7 +131,7 @@ with tab_queue:
         with c1: new_url = st.text_input("ATS Posting URL")
         with c2: new_company = st.text_input("Company Name")
         with c3: new_role = st.text_input("Role Title")
-        if st.form_submit_button("➕ Add to Queue"):
+        if st.form_submit_button("? Add to Queue"):
             if add_job_to_queue(new_url, new_company, new_role):
                 st.success(f"Added to queue.")
                 st.rerun()
@@ -146,7 +146,7 @@ with tab_queue:
         with col_info: st.markdown(f"**{j['company']} - {j['role']}** | [{j['url']}]({j['url']})")
         with col_st: st.markdown(f"`{j['status']}`")
         with col_act:
-            if st.button("🗑️", key=f"d_{j['id']}"):
+            if st.button("???", key=f"d_{j['id']}"):
                 delete_job_from_queue(j['id'])
                 st.rerun()
 
@@ -166,10 +166,10 @@ with tab_bridge:
 
         b1, b2 = st.columns(2)
         with b1:
-            preview_btn = st.button("🔍 Preview & Verify (auto_submit=False)", use_container_width=True)
+            preview_btn = st.button("?? Preview & Verify (auto_submit=False)", use_container_width=True)
         with b2:
             submit_disabled = len(needs_human) > 0 or active_job["status"] == "QUEUED"
-            final_btn = st.button("🚀 FINAL: Submit (auto_submit=True)", type="primary", use_container_width=True, disabled=submit_disabled)
+            final_btn = st.button("?? FINAL: Submit (auto_submit=True)", type="primary", use_container_width=True, disabled=submit_disabled)
 
         if preview_btn:
             with st.spinner("Executing Playwright & Llama 3.3 mapping..."):
@@ -194,16 +194,16 @@ with tab_bridge:
                         qid, q_type, label, opts = q["qid"], q.get("type", "text"), q["label"], q.get("options", [])
                         k = f"nh_{selected_id}_{qid}_{idx}"
                         if (q_type in ("multiselect", "checkbox") or "select all" in label.lower()) and opts:
-                            updated_inputs[label] = st.multiselect(label=f"📌 {label}", options=opts, default=[v for v in custom_ans.get(label, []) if v in opts], key=k)
+                            updated_inputs[label] = st.multiselect(label=f"?? {label}", options=opts, default=[v for v in custom_ans.get(label, []) if v in opts], key=k)
                         elif q_type in ("select", "radio") and opts:
                             s_opts = ["-- Select --"] + opts
                             def_idx = s_opts.index(custom_ans[label]) if custom_ans.get(label) in s_opts else 0
-                            val = st.selectbox(label=f"📌 {label}", options=s_opts, index=def_idx, key=k)
+                            val = st.selectbox(label=f"?? {label}", options=s_opts, index=def_idx, key=k)
                             if val != "-- Select --": updated_inputs[label] = val
                         else:
-                            updated_inputs[label] = st.text_area(label=f"📌 {label}", value=str(custom_ans.get(label, "")), key=k)
+                            updated_inputs[label] = st.text_area(label=f"?? {label}", value=str(custom_ans.get(label, "")), key=k)
 
-                    if st.form_submit_button("💾 Save & Preview Again", use_container_width=True):
+                    if st.form_submit_button("?? Save & Preview Again", use_container_width=True):
                         with st.spinner("Re-verifying with your answers..."):
                             res = run_async_task(execute_application(active_job["url"], profile, updated_inputs, False, headless_mode, groq_api_key))
                             update_job_execution_state(selected_id, res, updated_inputs)
