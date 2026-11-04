@@ -43,10 +43,17 @@ def init_db():
     """)
     c.execute("PRAGMA table_info(applications)")
     existing_cols = [row[1] for row in c.fetchall()]
-    if "unanswered_json" not in existing_cols:
-        c.execute("ALTER TABLE applications ADD COLUMN unanswered_json TEXT DEFAULT '[]'")
-    if "custom_answers_json" not in existing_cols:
-        c.execute("ALTER TABLE applications ADD COLUMN custom_answers_json TEXT DEFAULT '{}'")
+    needed_cols = {
+        "cover_letter_allowed": "TEXT DEFAULT 'Unknown'",
+        "unanswered_json": "TEXT DEFAULT '[]'",
+        "custom_answers_json": "TEXT DEFAULT '{}'"
+    }
+    for col_name, col_type in needed_cols.items():
+        if col_name not in existing_cols:
+            try:
+                c.execute(f"ALTER TABLE applications ADD COLUMN {col_name} {col_type}")
+            except Exception:
+                pass
     conn.commit()
     conn.close()
 
@@ -852,3 +859,4 @@ with tab3:
                         conn.close()
                         st.rerun()
                 st.markdown("<hr style='margin: 0.4rem 0; border-color: #1e293b;'/>", unsafe_allow_html=True)
+
