@@ -56,46 +56,8 @@ def get_db_connection():
 def load_profile():
     default_profile = {
         "full_name": "Joshua Jason Hanflink",
-        "signature_name": "Joshua Hanflink",
-        "first_name": "Joshua",
-        "middle_name": "Jason",
-        "last_name": "Hanflink",
-        "email": "jjhanflink@gmail.com",
-        "phone": "3369296685",
-        "location": "Greensboro, NC, USA",
-        "city": "Greensboro",
-        "state": "North Carolina",
-        "zip": "27410",
-        "linkedin": "http://www.linkedin.com/in/joshua-hanflink",
-        "github": "https://github.com/jjhanflink",
-        "portfolio": "https://jjhanflink.github.io",
-        "school": "North Carolina State University",
-        "degree": "B.S. in Electrical Engineering & Computer Engineering",
-        "major": "Electrical and Computer Engineering",
-        "degree_level": "Bachelor's degree",
-        "academic_year": "Senior",
-        "gpa": "3.5",
-        "degree_start": "08/2023",
-        "grad_date": "12/2027",
-        "preferred_location": "Dallas, Texas",
-        "work_location_ack": "Dallas, Texas",
-        "us_citizen_status": "A United States Citizen",
-        "how_did_you_hear": "Campus visit",
-        "technical_accomplishments": "1) Automated TCAD microfabrication workflow with Python & Streamlit converting GDSII layouts directly into simulation decks. 2) Hardware-software integration in the Active Robotic Sensing Lab developing 3D imaging, lighting, and embedded sensor pipelines.",
-        "mission_alignment": "I am deeply inspired by Shield AI's mission to protect service members through autonomous systems, and I bring a rigorous engineering work ethic and collaborative mindset to advance mission-critical hardware.",
-        "gender": "Male",
-        "ethnicity": "Hispanic or Latino",
-        "race_fallback": "White (Not Hispanic or Latino)",
-        "veteran_status": "I am not a protected veteran",
-        "disability_status": "Yes, I have a disability, or have had one in the past",
-        "us_person": "Yes",
-        "work_authorized": "Yes",
-        "sponsorship_needed": "No",
-        "relatives_employed": "No",
-        "work_onsite": "Yes",
-        "relocate": "Yes",
-        "over_18": "Yes",
-        "today_date": datetime.now().strftime("%m/%d/%Y")
+        "today_date": datetime.now().strftime("%m/%d/%Y"),
+        "gpa": "3.45"
     }
     if os.path.exists(PROFILE_FILE):
         try:
@@ -135,17 +97,12 @@ Candidate Profile:
 {json.dumps(profile, indent=2)}
 
 Strict Rules:
-1. Ethnicity/Race: ALWAYS choose 'Hispanic or Latino' if available. Fallback to 'White' only if Hispanic is not present.
-2. Degree: Choose 'Bachelor\'s degree' or 'B.S.'.
-3. Location: Prefer 'Dallas, Texas' if listed in options, or the primary job location.
-4. Citizenship / Work Auth / US Person: Choose 'A United States Citizen' or 'Yes'.
-5. Visa Sponsorship / Relatives: Choose 'No'.
-6. Academic Year: 'Senior'. Overall GPA: '3.5' or numeric bracket containing 3.5.
-7. Degree Start: '08/2023'. Degree Completion: '12/2027'.
-8. How did you hear: 'Campus visit' or 'University Career Center/Handshake'.
-9. Checkboxes for Authorization, Certifications, Terms, Proprietary Info: Return 'CHECK'.
-10. Conditional follow-up text fields (e.g., 'If yes, please specify', 'If you selected Other...', 'Optional Comments on GPA'): Return '' (blank).
-11. Return exact option string from the 'options' list for dropdowns or radio groups.
+1. Ethnicity/Race: ALWAYS choose 'Hispanic or Latino'.
+2. Citizenship / Work Auth / US Person: Choose 'A United States Citizen' or 'Yes'.
+3. Visa Sponsorship / Relatives: Choose 'No'.
+4. Checkboxes for Authorization, Certifications, Terms, Proprietary Info: Return 'CHECK'.
+5. MANUAL FALLBACK: If a question asks for a specific job location preference, club/group affiliation, how you heard about the role, past degrees completed, or short-answer essays, return 'NEEDS_HUMAN'. Do NOT guess these.
+6. Return exact option string from the 'options' list for dropdowns or radio groups.
 
 Questions:
 {json.dumps(form_schema, indent=2)}
@@ -227,7 +184,6 @@ class ATSAutomator:
                         pass
 
     async def _extract_clean_dom_schema(self, page):
-        """Extracts the real question prompts using Lever's specific .application-label hierarchy."""
         schema = await page.evaluate("""() => {
             const results = [];
             let qCounter = 0;
@@ -245,7 +201,6 @@ class ATSAutomator:
                 return clean.length > 2 ? clean.slice(0, 200) : (fallbackEl.name || 'Question');
             }
 
-            // 1. Process all .application-question or field containers
             const questionBlocks = document.querySelectorAll('.application-question, .custom-question, fieldset, li.application-question');
             questionBlocks.forEach(block => {
                 const selects = block.querySelectorAll('select');
@@ -299,7 +254,6 @@ class ATSAutomator:
                 });
             });
 
-            // 2. Collect standalone legal checkboxes
             document.querySelectorAll('input[type="checkbox"]').forEach(cb => {
                 const qid = 'q_' + (qCounter++);
                 cb.setAttribute('data-ats-qid', qid);
@@ -322,7 +276,6 @@ class ATSAutomator:
         filled = 0
         await self.accept_cookies(page)
 
-        # 1. Upload Resume
         if os.path.exists("resume.pdf"):
             file_inputs = await page.query_selector_all("input[type='file']")
             for f_in in file_inputs:
@@ -333,9 +286,6 @@ class ATSAutomator:
                         filled += 1
                         try:
                             await page.wait_for_selector("text='Analyzing resume'", state="visible", timeout=3500)
-                        except Exception:
-                            pass
-                        try:
                             await page.wait_for_selector("text='Analyzing resume'", state="hidden", timeout=15000)
                         except Exception:
                             pass
@@ -346,7 +296,6 @@ class ATSAutomator:
 
         await self.stepped_scroll(page)
 
-        # 2. Tag and Fill Core Profile Info
         core_map = [
             ("input[name='name'], input[aria-label*='Full Name' i]", profile.get("full_name", "Joshua Jason Hanflink")),
             ("input[name='email'], input[type='email']", profile.get("email", "")),
@@ -372,7 +321,7 @@ class ATSAutomator:
                 await loc_el.evaluate("el => el.setAttribute('data-core', 'true')")
                 await loc_el.click()
                 await loc_el.fill("")
-                await loc_el.type(profile.get("location", "Greensboro, NC, USA"), delay=45)
+                await loc_el.type(profile.get("location", "Raleigh, NC, USA"), delay=45)
                 await asyncio.sleep(1.2)
                 await loc_el.press("ArrowDown")
                 await loc_el.press("Enter")
@@ -381,7 +330,6 @@ class ATSAutomator:
             except Exception:
                 pass
 
-        # 3. Extract and Process the Question Blocks
         schema = await self._extract_clean_dom_schema(page)
         unfilled_items = [item for item in schema if not item.get("filled")]
         qid_answers = {}
@@ -394,7 +342,6 @@ class ATSAutomator:
             low = lbl.lower()
             opts = item.get("options", [])
 
-            # Check user-saved custom answers first
             for c_q, c_v in custom_answers.items():
                 if c_v and (c_q.lower()[:30] in low or low[:30] in c_q.lower()):
                     qid_answers[qid] = c_v
@@ -402,15 +349,11 @@ class ATSAutomator:
             if qid in qid_answers:
                 continue
 
-            # Deterministic mapping based on verified clean prompts
-            if "which location are you applying for" in low or "location" in low and opts:
-                for target in ["dallas", "remote", "austin"]:
-                    for o in opts:
-                        if target in o.lower():
-                            qid_answers[qid] = o
-                            break
-                    if qid in qid_answers:
-                        break
+            if "legal name" in low or low in ["name", "name *"]:
+                qid_answers[qid] = profile.get("full_name")
+
+            elif "authorized to work" in low:
+                qid_answers[qid] = profile.get("work_authorized", "Yes")
 
             elif "school or university" in low:
                 for o in opts:
@@ -418,45 +361,20 @@ class ATSAutomator:
                         qid_answers[qid] = o
                         break
 
-            elif "degree" in low and "program" not in low and ("level" in low or "type" in low or opts):
-                for o in opts:
-                    if "bachelor" in o.lower() or "b.s." in o.lower():
-                        qid_answers[qid] = o
-                        break
-
             elif "gpa" in low:
                 if qtype in ["select", "radio"]:
                     for o in opts:
-                        if "3.5" in o or "3.5 - 3.9" in o or "3.5 - 4.0" in o or "3.0 - 3.5" in o:
+                        if "3.5" in o or "3.45" in o or "3.0" in o or "3.4" in o:
                             qid_answers[qid] = o
                             break
-                elif qtype == "text":
-                    if not any(skip in low for skip in ["comment", "explain", "optional"]):
-                        qid_answers[qid] = profile.get("gpa", "3.5")
-
-            elif "how did you hear" in low or "campus visit" in low:
-                for o in opts:
-                    if any(h in o.lower() for h in ["campus visit", "career fair", "university", "handshake"]):
-                        qid_answers[qid] = o
-                        break
+                elif qtype == "text" and not any(skip in low for skip in ["comment", "explain", "optional"]):
+                    qid_answers[qid] = profile.get("gpa", "3.45")
 
             elif any(k in low for k in ["citizenship", "citizen status", "immigration", "u.s. person"]):
                 for o in opts:
                     if "united states citizen" in o.lower() or "u.s. citizen" in o.lower() or o.lower() == "yes":
                         qid_answers[qid] = o
                         break
-
-            elif any(k in low for k in ["when did you begin", "start date"]):
-                qid_answers[qid] = profile.get("degree_start", "08/2023")
-
-            elif any(k in low for k in ["expect to complete", "graduation date", "completion date"]):
-                qid_answers[qid] = profile.get("grad_date", "12/2027")
-
-            elif "strongest technical accomplishment" in low:
-                qid_answers[qid] = profile.get("technical_accomplishments", "")
-
-            elif "mission" in low or "values" in low:
-                qid_answers[qid] = profile.get("mission_alignment", "")
 
             elif any(k in low for k in ["if you selected", "if yes", "optional", "explain further", "comments on gpa"]):
                 qid_answers[qid] = ""
@@ -498,12 +416,11 @@ class ATSAutomator:
                     qid_answers[qid] = "CHECK"
 
             elif qtype == "text":
-                if low in ["name", "name *"] or "signature" in low:
+                if "signature" in low:
                     qid_answers[qid] = profile.get("signature_name", "Joshua Hanflink")
                 elif low in ["date", "date *"] or "today's date" in low:
                     qid_answers[qid] = today_str
 
-        # Send remaining unresolved to Llama 3.3
         remaining = [it for it in unfilled_items if it["qid"] not in qid_answers]
         llama_count = 0
         if remaining and self.groq_api_key:
@@ -513,14 +430,12 @@ class ATSAutomator:
                     qid_answers[k_qid] = v_ans
                     llama_count += 1
 
-        # Apply Answers by data-ats-qid
         for item in unfilled_items:
             qid = item["qid"]
             qtype = item["type"]
             ans = qid_answers.get(qid)
             if ans is None or ans == "":
                 continue
-
             try:
                 if qtype == "select":
                     sel_el = await page.query_selector(f"select[data-ats-qid='{qid}']")
@@ -593,7 +508,7 @@ class ATSAutomator:
                 seen.add(lbl)
                 unanswered.append({
                     "label": lbl[:140],
-                    "type": "select" if item["type"] in ["select", "radio"] else "text",
+                    "type": item["type"],
                     "options": item.get("options", [])[:25]
                 })
         return unanswered
@@ -609,20 +524,13 @@ class ATSAutomator:
         }
         try:
             async with async_playwright() as p:
-                browser = await p.chromium.launch(
-                    headless=self.headless,
-                    args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-                )
-                context = await browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                )
+                browser = await p.chromium.launch(headless=self.headless, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"])
+                context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
                 page = await context.new_page()
                 await self._navigate_to_form(page, url)
                 await self.stepped_scroll(page)
-
                 page_title = await page.title()
                 result["title"] = page_title.strip()
-
                 if "access denied" in page_title.lower() or "forbidden" in page_title.lower():
                     result["error"] = "Access Denied by WAF (Akamai/Cloudflare). Manual submission required."
                 else:
@@ -636,14 +544,13 @@ class ATSAutomator:
                         result["role"] = p_parts[1].strip()
                     elif page_title:
                         result["role"] = page_title.strip()
-
                 await page.screenshot(path=SCREENSHOT_PATH, full_page=True)
                 await browser.close()
         except Exception as e:
             result["error"] = str(e)
         return result
 
-    async def execute_full_application(self, url: str, profile: dict, custom_answers: dict = None, auto_submit: bool = True):
+    async def execute_full_application(self, url: str, profile: dict, custom_answers: dict = None, auto_submit: bool = False):
         custom_answers = dict(custom_answers or {})
         result = {
             "status": "In Progress",
@@ -655,13 +562,8 @@ class ATSAutomator:
         }
         try:
             async with async_playwright() as p:
-                browser = await p.chromium.launch(
-                    headless=self.headless,
-                    args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-                )
-                context = await browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                )
+                browser = await p.chromium.launch(headless=self.headless, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"])
+                context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
                 page = await context.new_page()
                 await self._navigate_to_form(page, url)
 
@@ -716,11 +618,9 @@ def run_async_coro(coro):
         return loop.run_until_complete(coro)
 
 st.set_page_config(page_title="Llama 3.3 ATS Auto-Applier", page_icon="⚡", layout="wide")
-
 st.sidebar.title("⚙️ Llama 3.3 ATS Engine")
 default_groq_key = st.secrets.get("GROQ_API_KEY", "") if hasattr(st, "secrets") else os.environ.get("GROQ_API_KEY", "")
 groq_key = st.sidebar.text_input("🦙 Free Groq Llama 3.3 API Key:", value=default_groq_key, type="password")
-
 engine_mode = st.sidebar.radio("Browser Execution Mode:", ["Headless (Cloud Safe)", "Headed (Visible Window - Local Only)"], index=0)
 is_headless = "Headless" in engine_mode
 
@@ -752,8 +652,8 @@ if st.sidebar.button("🧹 Purge Database (Full Reset)"):
             pass
     st.rerun()
 
-st.title("⚡ Meta Llama 3.3 ATS Auto-Applier & Question Bridge")
-st.caption("Clean .application-label Hierarchy • Shield AI & Lever Multi-Choice Calibration")
+st.title("⚡ Meta Llama 3.3 ATS Auto-Applier")
+st.caption("Versatile Architecture: Universal Mapping + Explicit Custom Fallbacks")
 
 tab1, tab2, tab3 = st.tabs(["1. Add Jobs to Queue", "2. Process Queue & Llama Bridge", "3. Application Tracker"])
 
@@ -773,19 +673,14 @@ with tab1:
             with st.spinner("Probing URL and resolving application form..."):
                 automator = ATSAutomator(headless=is_headless, groq_api_key=groq_key)
                 extracted = run_async_coro(automator.extract_title_and_probe(input_url.strip()))
-
                 final_company = custom_company.strip() or extracted["company"]
                 final_role = custom_role.strip() or extracted["role"]
-                final_platform = extracted["platform"]
-                cl_status = extracted["cover_letter_allowed"]
-                notes = extracted["error"] if extracted["error"] else "Form ready for Llama 3.3 Zero-Touch execution"
-
                 try:
                     conn = get_db_connection()
                     conn.execute("""
                         INSERT INTO applications (company, role, url, platform, status, cover_letter_allowed, notes, unanswered_json, custom_answers_json)
                         VALUES (?, ?, ?, ?, 'Pending', ?, ?, '[]', '{}')
-                    """, (final_company, final_role, input_url.strip(), final_platform, cl_status, notes))
+                    """, (final_company, final_role, input_url.strip(), extracted["platform"], extracted["cover_letter_allowed"], extracted["error"] or "Ready"))
                     conn.commit()
                     conn.close()
                     st.success(f"Added to Queue: **{final_role}** at **{final_company}**")
@@ -795,23 +690,18 @@ with tab1:
 
 with tab2:
     st.subheader("2. Zero-Touch Cloud Execution & Llama Question Bridge")
-
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("""
-        SELECT id, company, role, url, platform, status, cover_letter_allowed, notes, unanswered_json, custom_answers_json
-        FROM applications WHERE status IN ('Pending', 'Manual Action Needed')
-    """)
+    c.execute("SELECT id, company, role, url, platform, status, cover_letter_allowed, notes, unanswered_json, custom_answers_json FROM applications WHERE status IN ('Pending', 'Manual Action Needed')")
     pending_rows = c.fetchall()
     conn.close()
 
     if not pending_rows:
-        st.info("🎉 Your actionable queue is empty! All queued jobs have been submitted.")
+        st.info("🎉 Your actionable queue is empty!")
     else:
         job_options = {f"#{row[0]} | {row[1]} - {row[2]} [{row[5]}]": row for row in pending_rows}
         selected_label = st.selectbox("Select Job to Process:", list(job_options.keys()))
         job = job_options[selected_label]
-
         job_id, company, role, url, platform, status, cl_allowed, notes, unanswered_raw, custom_ans_raw = job
         unanswered_list = json.loads(unanswered_raw) if unanswered_raw else []
         saved_custom_answers = json.loads(custom_ans_raw) if custom_ans_raw else {}
@@ -820,18 +710,13 @@ with tab2:
         <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid #334155; padding: 1.25rem; border-radius: 12px; margin-bottom: 1rem;">
             <h3 style="margin-top:0; color:#38bdf8;">{role}</h3>
             <h4 style="color:#94a3b8; margin-bottom: 0.4rem;">{company} • <span style="color:#a855f7;">{platform}</span></h4>
-            <p style="font-size: 0.85rem; color:#cbd5e1; margin-bottom: 0.3rem;"><b>Status:</b> <code>{status}</code></p>
-            <p style="font-size: 0.85rem; color:#94a3b8; margin-bottom: 0;"><b>Diagnostics:</b> {notes}</p>
+            <p style="font-size: 0.85rem; color:#cbd5e1; margin-bottom: 0;"><b>Diagnostics:</b> {notes}</p>
         </div>
         """, unsafe_allow_html=True)
 
         col_link, col_del = st.columns([3, 1])
         with col_link:
-            st.markdown(f"""
-            <a href="{url}" target="_blank" style="display:inline-block; width:100%; text-align:center; padding: 0.6rem 1rem; background-color: #0284c7; color: white; border-radius: 8px; font-weight: bold; text-decoration: none; font-family: monospace;">
-                🔗 Open Job Application in New Tab ↗
-            </a>
-            """, unsafe_allow_html=True)
+            st.markdown(f'<a href="{url}" target="_blank" style="display:inline-block; width:100%; text-align:center; padding: 0.6rem 1rem; background-color: #0284c7; color: white; border-radius: 8px; font-weight: bold; text-decoration: none;">🔗 Open Job Application in New Tab ↗</a>', unsafe_allow_html=True)
         with col_del:
             if st.button("🗑️ Delete Job", key=f"del_{job_id}", use_container_width=True):
                 conn = get_db_connection()
@@ -840,46 +725,33 @@ with tab2:
                 conn.close()
                 st.rerun()
 
-        c1, c2, c3 = st.columns(3)
+        c1, c2 = st.columns(2)
         with c1:
-            if st.button("⚡ Llama Auto-Fill & Submit", use_container_width=True):
-                with st.spinner("Uploading resume, tagging DOM, running Llama 3.3, and submitting..."):
+            if st.button("🔍 Preview & Verify Data (No Submit)", use_container_width=True):
+                with st.spinner("Extracting questions and filling form to generate preview screenshot..."):
                     automator = ATSAutomator(headless=is_headless, groq_api_key=groq_key)
-                    res = run_async_coro(automator.execute_full_application(url, profile, saved_custom_answers, auto_submit=True))
+                    res = run_async_coro(automator.execute_full_application(url, profile, saved_custom_answers, auto_submit=False))
                     conn = get_db_connection()
-                    new_notes = res["error"] if res["error"] else f"Filled {res['fields_filled']} fields (Llama mapped {res['llama_mapped']}). Unanswered: {len(res['unanswered'])}"
-                    conn.execute(
-                        "UPDATE applications SET status=?, notes=?, unanswered_json=? WHERE id=?",
-                        (res["status"], new_notes, json.dumps(res["unanswered"]), job_id)
-                    )
+                    new_notes = f"Verified {res['fields_filled']} fields. Unanswered remaining: {len(res['unanswered'])}"
+                    conn.execute("UPDATE applications SET status='Manual Action Needed', notes=?, unanswered_json=? WHERE id=?", (new_notes, json.dumps(res["unanswered"]), job_id))
                     conn.commit()
                     conn.close()
                     st.rerun()
         with c2:
-            if st.button("🔍 Fill & Verify Only (No Submit)", use_container_width=True):
-                with st.spinner("Uploading resume, extracting clean questions, and checking fields..."):
+            if st.button("🚀 FINAL: Submit Application", type="primary", use_container_width=True):
+                with st.spinner("Executing final pipeline and submitting application..."):
                     automator = ATSAutomator(headless=is_headless, groq_api_key=groq_key)
-                    res = run_async_coro(automator.execute_full_application(url, profile, saved_custom_answers, auto_submit=False))
+                    res = run_async_coro(automator.execute_full_application(url, profile, saved_custom_answers, auto_submit=True))
                     conn = get_db_connection()
-                    new_notes = f"Verified {res['fields_filled']} fields (Llama mapped {res['llama_mapped']}). Unanswered: {len(res['unanswered'])}"
-                    conn.execute(
-                        "UPDATE applications SET status='Manual Action Needed', notes=?, unanswered_json=? WHERE id=?",
-                        (new_notes, json.dumps(res["unanswered"]), job_id)
-                    )
+                    new_notes = res["error"] if res["error"] else f"Successfully submitted {res['fields_filled']} fields."
+                    conn.execute("UPDATE applications SET status=?, notes=?, unanswered_json=? WHERE id=?", (res["status"], new_notes, json.dumps(res["unanswered"]), job_id))
                     conn.commit()
                     conn.close()
                     st.rerun()
-        with c3:
-            if st.button("✅ Mark as Submitted", use_container_width=True):
-                conn = get_db_connection()
-                conn.execute("UPDATE applications SET status='Submitted' WHERE id=?", (job_id,))
-                conn.commit()
-                conn.close()
-                st.rerun()
 
         if unanswered_list:
             st.markdown("---")
-            st.warning(f"⚠️ **Manual Input Needed ({len(unanswered_list)} Questions):** Answer below and click **Inject & Submit**.")
+            st.warning(f"⚠️ **Manual Input Needed ({len(unanswered_list)} Questions):** Select/type your answers below.")
             with st.form(key=f"bridge_form_{job_id}"):
                 updated_custom = dict(saved_custom_answers)
                 for idx, q_item in enumerate(unanswered_list):
@@ -888,34 +760,31 @@ with tab2:
                     q_opts = q_item.get("options", [])
                     default_val = updated_custom.get(q_lbl, "")
 
-                    if q_type == "select" and q_opts:
+                    if q_type in ["select", "radio"] and q_opts:
                         opts_with_blank = ["-- Select Answer --"] + q_opts
                         sel_idx = opts_with_blank.index(default_val) if default_val in opts_with_blank else 0
                         chosen = st.selectbox(f"📌 {q_lbl}", opts_with_blank, index=sel_idx, key=f"q_{job_id}_{idx}")
                         if chosen != "-- Select Answer --":
                             updated_custom[q_lbl] = chosen
                     else:
-                        typed = st.text_input(f"📌 {q_lbl}", value=default_val, key=f"q_{job_id}_{idx}")
+                        typed = st.text_area(f"📌 {q_lbl} (AI assisted essays welcome here)", value=default_val, key=f"q_{job_id}_{idx}", height=100)
                         if typed.strip():
                             updated_custom[q_lbl] = typed.strip()
 
-                if st.form_submit_button("⚡ Inject Custom Answers & Auto-Submit Now", use_container_width=True):
-                    with st.spinner("Injecting answers and submitting..."):
+                if st.form_submit_button("💾 Save Answers & Preview Again", use_container_width=True):
+                    with st.spinner("Saving answers and generating fresh preview screenshot..."):
                         automator = ATSAutomator(headless=is_headless, groq_api_key=groq_key)
-                        res = run_async_coro(automator.execute_full_application(url, profile, updated_custom, auto_submit=True))
+                        res = run_async_coro(automator.execute_full_application(url, profile, updated_custom, auto_submit=False))
                         conn = get_db_connection()
-                        new_notes = f"Injected {res['fields_filled']} fields. Remaining unanswered: {len(res['unanswered'])}"
-                        conn.execute(
-                            "UPDATE applications SET status=?, notes=?, unanswered_json=?, custom_answers_json=? WHERE id=?",
-                            (res["status"], new_notes, json.dumps(res["unanswered"]), json.dumps(updated_custom), job_id)
-                        )
+                        new_notes = f"Injected custom answers. Remaining unanswered: {len(res['unanswered'])}"
+                        conn.execute("UPDATE applications SET status='Manual Action Needed', notes=?, unanswered_json=?, custom_answers_json=? WHERE id=?", (new_notes, json.dumps(res["unanswered"]), json.dumps(updated_custom), job_id))
                         conn.commit()
                         conn.close()
                         st.rerun()
 
         st.markdown("---")
         if os.path.exists(SCREENSHOT_PATH):
-            st.markdown("##### 📸 Full-Page Cloud Browser Verification Capture:")
+            st.markdown("##### 📸 Full-Page Preview Screenshot:")
             st.image(SCREENSHOT_PATH, use_container_width=True)
 
 with tab3:
@@ -925,19 +794,16 @@ with tab3:
     c.execute("SELECT id, company, role, platform, status, url, notes, created_at FROM applications ORDER BY id DESC")
     all_rows = c.fetchall()
     conn.close()
-
     if not all_rows:
         st.info("No applications in the tracker yet.")
     else:
         for item in all_rows:
             i_id, i_comp, i_role, i_plat, i_stat, i_url, i_notes, i_date = item
             stat_color = "#3b82f6" if i_stat == "Pending" else "#22c55e" if i_stat == "Submitted" else "#eab308"
-
             with st.container():
                 c_info, c_btn1, c_btn2 = st.columns([6, 1.5, 1.5])
                 with c_info:
                     st.markdown(f"**#{i_id} • {i_comp}** — *{i_role}* <span style='color:{stat_color}; font-weight:bold;'>[{i_stat}]</span>", unsafe_allow_html=True)
-                    st.caption(f"Platform: {i_plat} | Notes: {i_notes} | [View Posting ↗]({i_url})")
                 with c_btn1:
                     if i_stat != 'Submitted':
                         if st.button("✅ Done", key=f"tbl_done_{i_id}", use_container_width=True):
