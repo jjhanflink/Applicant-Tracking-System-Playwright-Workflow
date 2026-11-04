@@ -180,15 +180,25 @@ class ATSAutomator:
 
         has_form = await page.query_selector("input[type='text'], input[type='email'], input[name='name']")
         if not has_form:
-            for sel in ["a:has-text('Apply for this job')", "a:has-text('Apply Now')", "button:has-text('Apply Now')", ".postings-btn"]:
-                btn = await page.query_selector(sel)
-                if btn and await btn.is_visible():
-                    try:
-                        await btn.evaluate("el => el.click()")
-                        await asyncio.sleep(3)
+            apply_selectors = [
+                "a:has-text('Apply for this job')", "a:has-text('Apply Now')", "button:has-text('Apply Now')",
+                "a:has-text('Apply now')", "button:has-text('Apply now')", "a:has-text('Apply')",
+                "[data-ph-at-id='apply-text']", ".ph-apply-button", ".apply-button", "a.apply-link"
+            ]
+            for sel in apply_selectors:
+                try:
+                    btns = await page.query_selector_all(sel)
+                    clicked = False
+                    for btn in btns:
+                        if await btn.is_visible():
+                            await btn.evaluate("el => el.click()")
+                            await asyncio.sleep(5)
+                            clicked = True
+                            break
+                    if clicked:
                         break
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
 
     async def _extract_clean_dom_schema(self, page):
         schema = await page.evaluate("""() => {
