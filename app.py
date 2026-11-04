@@ -98,10 +98,10 @@ Candidate Profile:
 
 Strict Rules:
 1. Ethnicity/Race: ALWAYS choose 'Hispanic or Latino'.
-2. Citizenship / Work Auth / US Person: Choose 'A United States Citizen' or 'Yes'.
+2. Citizenship / Work Auth / US Person / Export Control: Choose 'A United States Citizen', 'U.S. Citizen', or 'Yes'.
 3. Visa Sponsorship / Relatives: Choose 'No'.
-4. Checkboxes for Authorization, Certifications, Terms, Proprietary Info: Return 'CHECK'.
-5. MANUAL FALLBACK: If a question asks for a specific job location preference, club/group affiliation, how you heard about the role, past degrees completed, or short-answer essays, return 'NEEDS_HUMAN'. Do NOT guess these.
+4. Checkboxes for Authorization, Certifications, Terms, Proprietary Info, Burden Statements: Return 'CHECK'.
+5. MANUAL FALLBACK: If a question asks for a specific job location preference, club/group affiliation, how you heard about the role, past degrees completed, or ANY short-answer essays (technical accomplishments, mission, values), return 'NEEDS_HUMAN'. Do NOT guess these.
 6. Return exact option string from the 'options' list for dropdowns or radio groups.
 
 Questions:
@@ -187,87 +187,69 @@ class ATSAutomator:
         schema = await page.evaluate("""() => {
             const results = [];
             let qCounter = 0;
+            const radioGroups = {};
 
-            function extractPrompt(container, fallbackEl) {
-                if (!container) return fallbackEl.name || fallbackEl.placeholder || 'Question';
-                const labelEl = container.querySelector('.application-label, .text, label, legend, .section-headline, b, h4');
+            function extractPrompt(el) {
+                const container = el.closest('.application-question, .custom-question, fieldset, li, .application-field, div.field, label, div.form-group, .posting-requirement, div.section-wrapper');
+                if (!container) return el.name || el.placeholder || el.getAttribute('aria-label') || 'Question';
+                const labelEl = container.querySelector('.application-label, .text, legend, .section-headline, b, h4, .posting-req-label');
                 if (labelEl) {
                     const t = labelEl.innerText.replace(/\\s+/g, ' ').trim();
                     if (t.length > 2) return t;
                 }
                 const clone = container.cloneNode(true);
-                clone.querySelectorAll('select, input, ul, .application-field, .options-list').forEach(n => n.remove());
+                clone.querySelectorAll('select, input, ul, .application-field, .options-list, .resume-upload, .help-text').forEach(n => n.remove());
                 const clean = clone.innerText.replace(/\\s+/g, ' ').trim();
-                return clean.length > 2 ? clean : (fallbackEl.name || 'Question');
+                return clean.length > 2 ? clean : (el.name || el.placeholder || 'Question');
             }
 
-            const questionBlocks = document.querySelectorAll('.application-question, .custom-question, fieldset, li.application-question');
-            questionBlocks.forEach(block => {
-                const selects = block.querySelectorAll('select');
-                selects.forEach(sel => {
-                    const qid = 'q_' + (qCounter++);
-                    sel.setAttribute('data-ats-qid', qid);
-                    const opts = Array.from(sel.options).map(o => o.text.trim()).filter(t => t && !['select...', 'select one', '--'].includes(t.toLowerCase()));
-                    const curTxt = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text.trim() : '';
-                    const isFilled = sel.value && curTxt && !['select...', 'select one', '--'].includes(curTxt.toLowerCase());
-                    results.push({
-                        qid: qid,
-                        type: 'select',
-                        label: extractPrompt(block, sel),
-                        options: opts,
-                        filled: Boolean(isFilled)
-                    });
-                });
-
-                const radios = block.querySelectorAll('input[type="radio"], input[type="checkbox"]:not([name*="consent"])');
-                if (radios.length > 0) {
-                    const qid = 'q_' + (qCounter++);
-                    const opts = [];
-                    let isFilled = false;
-                    let isMulti = false;
-                    radios.forEach(rad => {
-                        rad.setAttribute('data-ats-qid', qid);
-                        if (rad.checked) isFilled = true;
-                        if (rad.type === 'checkbox') isMulti = true;
-                        const rLbl = rad.closest('label') || document.querySelector(`label[for="${rad.id}"]`);
-                        const oTxt = rLbl ? rLbl.innerText.trim().split('\\n')[0] : rad.value;
-                        if (oTxt) opts.push(oTxt);
-                    });
-                    results.push({
-                        qid: qid,
-                        type: isMulti ? 'multiselect' : 'radio',
-                        label: extractPrompt(block, radios[0]),
-                        options: opts,
-                        filled: isFilled
-                    });
-                }
-
-                const textInputs = block.querySelectorAll('input[type="text"]:not([data-core="true"]), input[type="number"], textarea');
-                textInputs.forEach(tInp => {
-                    const qid = 'q_' + (qCounter++);
-                    tInp.setAttribute('data-ats-qid', qid);
-                    results.push({
-                        qid: qid,
-                        type: 'text',
-                        label: extractPrompt(block, tInp),
-                        options: [],
-                        filled: Boolean(tInp.value && tInp.value.trim().length > 0)
-                    });
-                });
+            // Global Selection of all interactive elements
+            document.querySelectorAll('select').forEach(sel => {
+                if (sel.offsetParent === null) return;
+                const qid = 'q_' + (qCounter++);
+                sel.setAttribute('data-ats-qid', qid);
+                const opts = Array.from(sel.options).map(o => o.text.trim()).filter(t => t && !['select...', 'select one', '--'].includes(t.toLowerCase()));
+                const curTxt = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text.trim() : '';
+                const isFilled = sel.value && curTxt && !['select...', 'select one', '--'].includes(curTxt.toLowerCase());
+                results.push({ qid, type: 'select', label: extractPrompt(sel), options: opts, filled: Boolean(isFilled) });
             });
 
-            document.querySelectorAll('input[type="checkbox"][name*="consent"], input[type="checkbox"][required]').forEach(cb => {
+            document.querySelectorAll('input[type="radio"], input[type="checkbox"]:not([name*="consent"]):not([required]):not([id*="consent"])').forEach(rad => {
+                if (rad.offsetParent === null) return;
+                const name = rad.name || ('anon_' + extractPrompt(rad));
+                if (!radioGroups[name]) radioGroups[name] = [];
+                radioGroups[name].push(rad);
+            });
+
+            Object.keys(radioGroups).forEach(name => {
+                const group = radioGroups[name];
+                const qid = 'q_' + (qCounter++);
+                const opts = [];
+                let isFilled = false;
+                let isMulti = false;
+                group.forEach(el => {
+                    el.setAttribute('data-ats-qid', qid);
+                    if (el.checked) isFilled = true;
+                    if (el.type === 'checkbox') isMulti = true;
+                    const rLbl = el.closest('label') || document.querySelector(`label[for="${el.id}"]`);
+                    const oTxt = rLbl ? rLbl.innerText.trim().split('\\n')[0] : el.value;
+                    if (oTxt) opts.push(oTxt);
+                });
+                results.push({ qid, type: isMulti ? 'multiselect' : 'radio', label: extractPrompt(group[0]), options: opts, filled: isFilled });
+            });
+
+            document.querySelectorAll('input[type="text"]:not([data-core="true"]), input[type="number"], textarea').forEach(tInp => {
+                if (tInp.offsetParent === null) return;
+                const qid = 'q_' + (qCounter++);
+                tInp.setAttribute('data-ats-qid', qid);
+                results.push({ qid, type: 'text', label: extractPrompt(tInp), options: [], filled: Boolean(tInp.value && tInp.value.trim().length > 0) });
+            });
+
+            document.querySelectorAll('input[type="checkbox"][name*="consent"], input[type="checkbox"][required], input[type="checkbox"][id*="consent"]').forEach(cb => {
+                if (cb.offsetParent === null) return;
                 const qid = 'q_' + (qCounter++);
                 cb.setAttribute('data-ats-qid', qid);
-                const cBlock = cb.closest('li, div.application-question, fieldset, label');
-                const prompt = extractPrompt(cBlock, cb);
-                results.push({
-                    qid: qid,
-                    type: 'checkbox',
-                    label: prompt,
-                    options: ['CHECK', 'SKIP'],
-                    filled: cb.checked
-                });
+                results.push({ qid, type: 'checkbox', label: extractPrompt(cb), options: ['CHECK', 'SKIP'], filled: cb.checked });
             });
 
             return results;
@@ -278,6 +260,7 @@ class ATSAutomator:
         filled = 0
         await self.accept_cookies(page)
 
+        # 1. Upload Resume and Wait for DOM Lock
         if os.path.exists("resume.pdf"):
             file_inputs = await page.query_selector_all("input[type='file']")
             for f_in in file_inputs:
@@ -291,13 +274,14 @@ class ATSAutomator:
                             await page.wait_for_selector("text='Analyzing resume'", state="hidden", timeout=15000)
                         except Exception:
                             pass
-                        await asyncio.sleep(2.0)
+                        await asyncio.sleep(4.0)  # Increased buffer to prevent Lever from overwriting fields
                         break
                 except Exception:
                     pass
 
         await self.stepped_scroll(page)
 
+        # 2. Tag and Fill Core Profile Info safely (skipping hidden elements)
         core_map = [
             ("input[name='name'], input[aria-label*='Full Name' i]", profile.get("full_name", "Joshua Jason Hanflink")),
             ("input[name='email'], input[type='email']", profile.get("email", "")),
@@ -308,30 +292,35 @@ class ATSAutomator:
             ("input[name='urls[Portfolio]'], input[name*='portfolio' i]", profile.get("portfolio", ""))
         ]
         for sel, val in core_map:
-            el = await page.query_selector(sel)
-            if el and await el.is_visible():
-                try:
-                    await el.evaluate("el => el.setAttribute('data-core', 'true')")
-                    await el.fill(val)
-                    filled += 1
-                except Exception:
-                    pass
-
-        loc_el = await page.query_selector("input[name*='location' i], input[id*='location' i]")
-        if loc_el and await loc_el.is_visible():
             try:
-                await loc_el.evaluate("el => el.setAttribute('data-core', 'true')")
-                await loc_el.click()
-                await loc_el.fill("")
-                await loc_el.type(profile.get("location", "Raleigh, NC, USA"), delay=45)
-                await asyncio.sleep(1.2)
-                await loc_el.press("ArrowDown")
-                await loc_el.press("Enter")
-                await loc_el.press("Tab")
-                filled += 1
+                elements = await page.query_selector_all(sel)
+                for el in elements:
+                    if await el.is_visible():
+                        await el.evaluate("el => el.setAttribute('data-core', 'true')")
+                        await el.fill(val)
+                        filled += 1
+                        break
             except Exception:
                 pass
 
+        loc_els = await page.query_selector_all("input[name*='location' i], input[id*='location' i]")
+        for loc_el in loc_els:
+            if await loc_el.is_visible():
+                try:
+                    await loc_el.evaluate("el => el.setAttribute('data-core', 'true')")
+                    await loc_el.click()
+                    await loc_el.fill("")
+                    await loc_el.type(profile.get("location", "Raleigh, NC, USA"), delay=45)
+                    await asyncio.sleep(1.2)
+                    await loc_el.press("ArrowDown")
+                    await loc_el.press("Enter")
+                    await loc_el.press("Tab")
+                    filled += 1
+                    break
+                except Exception:
+                    pass
+
+        # 3. Global Schema Extraction
         schema = await self._extract_clean_dom_schema(page)
         unfilled_items = [item for item in schema if not item.get("filled")]
         qid_answers = {}
@@ -351,7 +340,13 @@ class ATSAutomator:
             if qid in qid_answers:
                 continue
 
-            if "school or university" in low:
+            if "legal name" in low or low in ["name", "name *"]:
+                qid_answers[qid] = profile.get("full_name")
+
+            elif "authorized to work" in low:
+                qid_answers[qid] = profile.get("work_authorized", "Yes")
+
+            elif "school or university" in low:
                 for o in opts:
                     if "north carolina state" in o.lower() or "nc state" in o.lower():
                         qid_answers[qid] = o
@@ -366,7 +361,7 @@ class ATSAutomator:
                 elif qtype == "text" and not any(skip in low for skip in ["comment", "explain", "optional"]):
                     qid_answers[qid] = profile.get("gpa", "3.45")
 
-            elif any(k in low for k in ["citizenship", "citizen status", "immigration", "u.s. person"]):
+            elif any(k in low for k in ["citizenship", "citizen status", "immigration", "u.s. person", "export control"]):
                 for o in opts:
                     if "united states citizen" in o.lower() or "u.s. citizen" in o.lower() or o.lower() == "yes":
                         qid_answers[qid] = o
@@ -408,11 +403,11 @@ class ATSAutomator:
                             break
 
             elif qtype == "checkbox":
-                if any(k in low for k in ["certify", "acknowledge", "agree", "proprietary", "authorization", "terms", "privacy"]):
+                if any(k in low for k in ["certify", "acknowledge", "agree", "proprietary", "authorization", "terms", "privacy", "burden statement"]):
                     qid_answers[qid] = "CHECK"
 
             elif qtype == "text":
-                if "signature" in low:
+                if "signature" in low or "legal name" in low:
                     qid_answers[qid] = profile.get("signature_name", "Joshua Hanflink")
                 elif low in ["date", "date *"] or "today's date" in low:
                     qid_answers[qid] = today_str
@@ -556,7 +551,10 @@ class ATSAutomator:
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=self.headless, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"])
-                context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    viewport={'width': 1280, 'height': 1080}
+                )
                 page = await context.new_page()
                 await self._navigate_to_form(page, url)
                 await self.stepped_scroll(page)
@@ -575,7 +573,7 @@ class ATSAutomator:
                         result["role"] = p_parts[1].strip()
                     elif page_title:
                         result["role"] = page_title.strip()
-                await page.screenshot(path=SCREENSHOT_PATH, full_page=True)
+                await page.screenshot(path=SCREENSHOT_PATH, full_page=True, animations="disabled")
                 await browser.close()
         except Exception as e:
             result["error"] = str(e)
@@ -594,7 +592,10 @@ class ATSAutomator:
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=self.headless, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"])
-                context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    viewport={'width': 1280, 'height': 1080}
+                )
                 page = await context.new_page()
                 await self._navigate_to_form(page, url)
 
@@ -684,7 +685,7 @@ if st.sidebar.button("🧹 Purge Database (Full Reset)"):
     st.rerun()
 
 st.title("⚡ Meta Llama 3.3 ATS Auto-Applier")
-st.caption("UI Fixes: Multiselect for location preferences, full-length questions, and headed screenshots")
+st.caption("UI Fixes: Global DOM Fallback Extraction and Checkbox Binding")
 
 tab1, tab2, tab3 = st.tabs(["1. Add Jobs to Queue", "2. Process Queue & Llama Bridge", "3. Application Tracker"])
 
@@ -759,7 +760,7 @@ with tab2:
         c1, c2 = st.columns(2)
         with c1:
             if st.button("🔍 Preview & Verify Data (No Submit)", use_container_width=True):
-                with st.spinner("Extracting questions and filling form to generate preview screenshot..."):
+                with st.spinner("Executing global DOM extraction and generating full-page preview..."):
                     automator = ATSAutomator(headless=is_headless, groq_api_key=groq_key)
                     res = run_async_coro(automator.execute_full_application(url, profile, saved_custom_answers, auto_submit=False))
                     conn = get_db_connection()
