@@ -1,24 +1,23 @@
-﻿import subprocess
-import sys
-
-def ensure_playwright_browsers():
-    try:
-        # Check if browser binaries exist, install if missing
-        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
-    except Exception as e:
-        print(f"Error ensuring Playwright browsers: {e}")
-
-ensure_playwright_browsers()
-import os
+﻿import os
 import re
 import json
 import sqlite3
 import asyncio
+import subprocess
+import sys
 import requests
 from datetime import datetime
 from urllib.parse import urlparse
 import streamlit as st
 from playwright.async_api import async_playwright
+
+def ensure_playwright_browsers():
+    try:
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+    except Exception as e:
+        print(f"Error ensuring Playwright browsers: {e}")
+
+ensure_playwright_browsers()
 
 DB_FILE = "ats_queue.db"
 PROFILE_FILE = "candidate_profile.json"
@@ -63,18 +62,27 @@ def load_profile():
         "last_name": "Hanflink",
         "email": "jjhanflink@gmail.com",
         "phone": "3369296685",
-        "location": "Raleigh, NC, USA",
-        "city": "Raleigh",
+        "location": "Greensboro, NC, USA",
+        "city": "Greensboro",
         "state": "North Carolina",
-        "zip": "27606",
-        "linkedin": "https://www.linkedin.com/in/joshua-hanflink",
+        "zip": "27410",
+        "linkedin": "http://www.linkedin.com/in/joshua-hanflink",
         "github": "https://github.com/jjhanflink",
         "portfolio": "https://jjhanflink.github.io",
         "school": "North Carolina State University",
         "degree": "B.S. in Electrical Engineering & Computer Engineering",
         "major": "Electrical and Computer Engineering",
+        "degree_level": "Bachelor's degree",
+        "academic_year": "Senior",
+        "gpa": "3.5",
+        "degree_start": "08/2023",
         "grad_date": "12/2027",
-        "gpa": "3.8",
+        "preferred_location": "Dallas, Texas",
+        "work_location_ack": "Dallas, Texas",
+        "us_citizen_status": "A United States Citizen",
+        "how_did_you_hear": "Campus visit",
+        "technical_accomplishments": "1) Automated TCAD microfabrication workflow with Python & Streamlit converting GDSII layouts directly into simulation decks. 2) Hardware-software integration in the Active Robotic Sensing Lab developing 3D imaging, lighting, and embedded sensor pipelines.",
+        "mission_alignment": "I am deeply inspired by Shield AI's mission to protect service members through autonomous systems, and I bring a rigorous engineering work ethic and collaborative mindset to advance mission-critical hardware.",
         "gender": "Male",
         "ethnicity": "Hispanic or Latino",
         "race_fallback": "White (Not Hispanic or Latino)",
@@ -127,23 +135,22 @@ Candidate Profile:
 {json.dumps(profile, indent=2)}
 
 Strict Rules:
-1. Ethnicity/Race: ALWAYS select the option starting with 'Hispanic or Latino' if present in options. Only select 'White' if 'Hispanic or Latino' is NOT in the options list.
-2. Gender: Select 'Male'.
-3. Veteran Status: Select the option meaning 'I am not a protected veteran' or 'No'.
-4. Disability Status: Select 'Yes, I have a disability, or have had one in the past'.
-5. Disability Signature Name: 'Joshua Hanflink'. Disability Date: '{profile.get("today_date")}'.
-6. U.S. Person / Export Control / Citizen / Legally Authorized / Onsite / Relocate / 18+: Select 'Yes'.
-7. Require Visa Sponsorship (now or in future): Select 'No'.
-8. Family member / relative currently employed at company: Select 'No'.
-9. Conditional follow-up text boxes (e.g. 'If yes, please specify...', 'Additional information', 'Cover letter'): Return "" (empty string) so they remain blank.
-10. Authorization / Certification / Proprietary Information / Privacy Agreement checkboxes: Return "CHECK".
-11. For 'select' or 'radio' fields, you MUST return the EXACT option text from the provided 'options' array.
-12. Only if a required question asks for a specific essay or unknown factual detail not inferable from the profile, return "NEEDS_HUMAN".
+1. Ethnicity/Race: ALWAYS choose 'Hispanic or Latino' if available. Fallback to 'White' only if Hispanic is not present.
+2. Degree: Choose 'Bachelor\'s degree' or 'B.S.'.
+3. Location: Prefer 'Dallas, Texas' if listed in options, or the primary job location.
+4. Citizenship / Work Auth / US Person: Choose 'A United States Citizen' or 'Yes'.
+5. Visa Sponsorship / Relatives: Choose 'No'.
+6. Academic Year: 'Senior'. Overall GPA: '3.5' or numeric bracket containing 3.5.
+7. Degree Start: '08/2023'. Degree Completion: '12/2027'.
+8. How did you hear: 'Campus visit' or 'University Career Center/Handshake'.
+9. Checkboxes for Authorization, Certifications, Terms, Proprietary Info: Return 'CHECK'.
+10. Conditional follow-up text fields (e.g., 'If yes, please specify', 'If you selected Other...', 'Optional Comments on GPA'): Return '' (blank).
+11. Return exact option string from the 'options' list for dropdowns or radio groups.
 
-Form Questions to Resolve:
+Questions:
 {json.dumps(form_schema, indent=2)}
 
-Return ONLY a valid JSON object mapping each question's 'qid' (e.g. "q_0", "q_1") to its answer string."""
+Return ONLY a JSON mapping the question 'qid' to the string answer."""
 
     try:
         resp = requests.post(
@@ -158,8 +165,7 @@ Return ONLY a valid JSON object mapping each question's 'qid' (e.g. "q_0", "q_1"
             timeout=20
         )
         if resp.status_code == 200:
-            content = resp.json()["choices"][0]["message"]["content"]
-            return json.loads(content)
+            return json.loads(resp.json()["choices"][0]["message"]["content"])
     except Exception:
         pass
     return {}
@@ -170,19 +176,7 @@ class ATSAutomator:
         self.groq_api_key = groq_api_key
 
     async def accept_cookies(self, page):
-        cookie_selectors = [
-            "button:has-text('Accept All')",
-            "button:has-text('Accept all')",
-            "button:has-text('ACCEPT')",
-            "button:has-text('Accept Cookies')",
-            "button:has-text('Accept')",
-            "button:has-text('Allow All')",
-            "button:has-text('I Agree')",
-            "#onetrust-accept-btn-handler",
-            "#accept-cookies",
-            ".cookie-accept"
-        ]
-        for sel in cookie_selectors:
+        for sel in ["button:has-text('Accept All')", "button:has-text('Accept all')", "button:has-text('Accept')", "#accept-cookies", ".cookie-accept"]:
             try:
                 btn = await page.query_selector(sel)
                 if btn and await btn.is_visible():
@@ -222,16 +216,7 @@ class ATSAutomator:
 
         has_form = await page.query_selector("input[type='text'], input[type='email'], input[name='name']")
         if not has_form:
-            apply_selectors = [
-                "a:has-text('Apply for this job')",
-                "a:has-text('Apply Now')",
-                "button:has-text('Apply Now')",
-                "a:has-text('Apply')",
-                "button:has-text('Apply')",
-                ".postings-btn",
-                "[data-qa='show-page-apply']"
-            ]
-            for sel in apply_selectors:
+            for sel in ["a:has-text('Apply for this job')", "a:has-text('Apply Now')", "button:has-text('Apply Now')", ".postings-btn"]:
                 btn = await page.query_selector(sel)
                 if btn and await btn.is_visible():
                     try:
@@ -241,101 +226,91 @@ class ATSAutomator:
                     except Exception:
                         pass
 
-    async def _extract_full_dom_schema(self, page):
-        """Tags every interactive question in the DOM with a unique data-ats-qid and extracts its label, type, and options."""
+    async def _extract_clean_dom_schema(self, page):
+        """Extracts the real question prompts using Lever's specific .application-label hierarchy."""
         schema = await page.evaluate("""() => {
             const results = [];
             let qCounter = 0;
 
-            function getQuestionText(el) {
-                const container = el.closest('li.application-question, div.application-question, fieldset, div.field, div.form-group, label');
-                if (container) {
-                    const clone = container.cloneNode(true);
-                    clone.querySelectorAll('select, ul, .application-field').forEach(n => n.remove());
-                    const txt = clone.innerText.replace(/\\s+/g, ' ').trim();
-                    if (txt.length > 2) return txt.slice(0, 220);
-                    return container.innerText.split('\\n')[0].trim().slice(0, 220);
+            function extractPrompt(container, fallbackEl) {
+                if (!container) return fallbackEl.name || fallbackEl.placeholder || 'Question';
+                const labelEl = container.querySelector('.application-label, .text, label, legend, .section-headline, b, h4');
+                if (labelEl) {
+                    const t = labelEl.innerText.replace(/\\s+/g, ' ').trim();
+                    if (t.length > 2) return t.slice(0, 200);
                 }
-                if (el.id) {
-                    const lbl = document.querySelector(`label[for="${el.id}"]`);
-                    if (lbl) return lbl.innerText.trim().slice(0, 220);
-                }
-                return (el.getAttribute('aria-label') || el.placeholder || el.name || 'Question').trim();
+                const clone = container.cloneNode(true);
+                clone.querySelectorAll('select, input, ul, .application-field, .options-list').forEach(n => n.remove());
+                const clean = clone.innerText.replace(/\\s+/g, ' ').trim();
+                return clean.length > 2 ? clean.slice(0, 200) : (fallbackEl.name || 'Question');
             }
 
-            // 1. Dropdowns (<select>)
-            document.querySelectorAll('select').forEach(sel => {
-                if (sel.offsetParent === null) return;
-                const qid = 'q_' + (qCounter++);
-                sel.setAttribute('data-ats-qid', qid);
-                const opts = Array.from(sel.options)
-                    .map(o => o.text.trim())
-                    .filter(t => t && !['select...', 'select one', 'choose', '--', ''].includes(t.toLowerCase()));
-                const currentText = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text.trim() : '';
-                const isFilled = sel.value && currentText && !['select...', 'select one', 'choose', '--', ''].includes(currentText.toLowerCase());
-                results.push({
-                    qid: qid,
-                    type: 'select',
-                    label: getQuestionText(sel),
-                    options: opts,
-                    filled: Boolean(isFilled)
+            // 1. Process all .application-question or field containers
+            const questionBlocks = document.querySelectorAll('.application-question, .custom-question, fieldset, li.application-question');
+            questionBlocks.forEach(block => {
+                const selects = block.querySelectorAll('select');
+                selects.forEach(sel => {
+                    const qid = 'q_' + (qCounter++);
+                    sel.setAttribute('data-ats-qid', qid);
+                    const opts = Array.from(sel.options).map(o => o.text.trim()).filter(t => t && !['select...', 'select one', '--'].includes(t.toLowerCase()));
+                    const curTxt = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text.trim() : '';
+                    const isFilled = sel.value && curTxt && !['select...', 'select one', '--'].includes(curTxt.toLowerCase());
+                    results.push({
+                        qid: qid,
+                        type: 'select',
+                        label: extractPrompt(block, sel),
+                        options: opts,
+                        filled: Boolean(isFilled)
+                    });
+                });
+
+                const radios = block.querySelectorAll('input[type="radio"]');
+                if (radios.length > 0) {
+                    const qid = 'q_' + (qCounter++);
+                    const opts = [];
+                    let isFilled = false;
+                    radios.forEach(rad => {
+                        rad.setAttribute('data-ats-qid', qid);
+                        if (rad.checked) isFilled = true;
+                        const rLbl = rad.closest('label') || document.querySelector(`label[for="${rad.id}"]`);
+                        const oTxt = rLbl ? rLbl.innerText.trim().split('\\n')[0] : rad.value;
+                        if (oTxt) opts.push(oTxt);
+                    });
+                    results.push({
+                        qid: qid,
+                        type: 'radio',
+                        label: extractPrompt(block, radios[0]),
+                        options: opts,
+                        filled: isFilled
+                    });
+                }
+
+                const textInputs = block.querySelectorAll('input[type="text"]:not([data-core="true"]), input[type="number"], textarea');
+                textInputs.forEach(tInp => {
+                    const qid = 'q_' + (qCounter++);
+                    tInp.setAttribute('data-ats-qid', qid);
+                    results.push({
+                        qid: qid,
+                        type: 'text',
+                        label: extractPrompt(block, tInp),
+                        options: [],
+                        filled: Boolean(tInp.value && tInp.value.trim().length > 0)
+                    });
                 });
             });
 
-            // 2. Radio Groups (grouped by name)
-            const radioGroups = {};
-            document.querySelectorAll('input[type="radio"]').forEach(rad => {
-                const name = rad.name || ('anon_rad_' + qCounter);
-                if (!radioGroups[name]) radioGroups[name] = [];
-                radioGroups[name].push(rad);
-            });
-            Object.keys(radioGroups).forEach(name => {
-                const group = radioGroups[name];
-                const qid = 'q_' + (qCounter++);
-                const opts = [];
-                let isFilled = false;
-                group.forEach(rad => {
-                    rad.setAttribute('data-ats-qid', qid);
-                    if (rad.checked) isFilled = true;
-                    const lbl = rad.closest('label') || document.querySelector(`label[for="${rad.id}"]`);
-                    const oTxt = lbl ? lbl.innerText.trim().split('\\n')[0] : (rad.value || '');
-                    if (oTxt) opts.push(oTxt);
-                });
-                results.push({
-                    qid: qid,
-                    type: 'radio',
-                    label: getQuestionText(group[0]),
-                    options: opts,
-                    filled: isFilled
-                });
-            });
-
-            // 3. Checkboxes (grouped by name or individual consent boxes)
+            // 2. Collect standalone legal checkboxes
             document.querySelectorAll('input[type="checkbox"]').forEach(cb => {
                 const qid = 'q_' + (qCounter++);
                 cb.setAttribute('data-ats-qid', qid);
-                const lbl = cb.closest('label') || document.querySelector(`label[for="${cb.id}"]`) || cb.closest('li.application-question, div.application-question, div');
-                const txt = lbl ? lbl.innerText.replace(/\\s+/g, ' ').trim().slice(0, 220) : (cb.name || 'Checkbox');
+                const cBlock = cb.closest('li, div.application-question, fieldset, label');
+                const prompt = extractPrompt(cBlock, cb);
                 results.push({
                     qid: qid,
                     type: 'checkbox',
-                    label: txt,
+                    label: prompt,
                     options: ['CHECK', 'SKIP'],
                     filled: cb.checked
-                });
-            });
-
-            // 4. Text / Number / Textarea Inputs (excluding already-filled top identity fields)
-            document.querySelectorAll('input[type="text"], input[type="number"], input[type="tel"], input[type="email"], textarea').forEach(inp => {
-                if (inp.offsetParent === null) return;
-                const qid = 'q_' + (qCounter++);
-                inp.setAttribute('data-ats-qid', qid);
-                results.push({
-                    qid: qid,
-                    type: 'text',
-                    label: getQuestionText(inp),
-                    options: [],
-                    filled: Boolean(inp.value && inp.value.trim().length > 0)
                 });
             });
 
@@ -347,16 +322,15 @@ class ATSAutomator:
         filled = 0
         await self.accept_cookies(page)
 
-        # 1. UPLOAD RESUME & HARD-WAIT FOR LEVER PARSER TO FINISH
+        # 1. Upload Resume
         if os.path.exists("resume.pdf"):
             file_inputs = await page.query_selector_all("input[type='file']")
             for f_in in file_inputs:
                 try:
-                    parent_txt = (await f_in.evaluate("el => el.closest('div, label, fieldset')?.innerText || ''")).lower()
-                    if "cover letter" not in parent_txt:
+                    p_txt = (await f_in.evaluate("el => el.closest('div, label, fieldset')?.innerText || ''")).lower()
+                    if "cover letter" not in p_txt:
                         await f_in.set_input_files("resume.pdf")
                         filled += 1
-                        # Wait up to 4s for 'Analyzing resume...' to appear, then wait up to 15s for it to vanish
                         try:
                             await page.wait_for_selector("text='Analyzing resume'", state="visible", timeout=3500)
                         except Exception:
@@ -372,49 +346,33 @@ class ATSAutomator:
 
         await self.stepped_scroll(page)
 
-        # 2. OVERWRITE CORE TOP-OF-PAGE IDENTITY FIELDS AFTER RESUME PARSE
-        full_name_el = await page.query_selector("input[name='name'], input[aria-label*='Full Name' i]")
-        if full_name_el:
-            await full_name_el.fill(profile.get("full_name", "Joshua Jason Hanflink"))
-            filled += 1
-        else:
-            fn = await page.query_selector("input[name*='first_name' i], input[id*='first_name' i]")
-            if fn:
-                await fn.fill(profile.get("first_name", "Joshua"))
-                filled += 1
-            ln = await page.query_selector("input[name*='last_name' i], input[id*='last_name' i]")
-            if ln:
-                await ln.fill(profile.get("last_name", "Hanflink"))
-                filled += 1
-
-        field_map = [
-            (["input[name='email']", "input[type='email']", "input[id*='email' i]"], profile.get("email", "")),
-            (["input[name='phone']", "input[type='tel']", "input[id*='phone' i]"], profile.get("phone", "")),
-            (["input[name='org']", "input[id*='org' i]", "input[name*='company' i]", "input[aria-label*='Current company' i]"], profile.get("school", "")),
-            (["input[name='urls[LinkedIn]']", "input[name*='linkedin' i]"], profile.get("linkedin", "")),
-            (["input[name='urls[GitHub]']", "input[name*='github' i]"], profile.get("github", "")),
-            (["input[name='urls[Portfolio]']", "input[name='urls[Other]']", "input[name*='portfolio' i]", "input[name*='website' i]"], profile.get("portfolio", ""))
+        # 2. Tag and Fill Core Profile Info
+        core_map = [
+            ("input[name='name'], input[aria-label*='Full Name' i]", profile.get("full_name", "Joshua Jason Hanflink")),
+            ("input[name='email'], input[type='email']", profile.get("email", "")),
+            ("input[name='phone'], input[type='tel']", profile.get("phone", "")),
+            ("input[name='org'], input[name*='company' i]", profile.get("school", "")),
+            ("input[name='urls[LinkedIn]'], input[name*='linkedin' i]", profile.get("linkedin", "")),
+            ("input[name='urls[GitHub]'], input[name*='github' i]", profile.get("github", "")),
+            ("input[name='urls[Portfolio]'], input[name*='portfolio' i]", profile.get("portfolio", ""))
         ]
-        for selectors, val in field_map:
-            if not val:
-                continue
-            for sel in selectors:
-                el = await page.query_selector(sel)
-                if el and await el.is_visible():
-                    try:
-                        await el.fill(val)
-                        filled += 1
-                        break
-                    except Exception:
-                        pass
+        for sel, val in core_map:
+            el = await page.query_selector(sel)
+            if el and await el.is_visible():
+                try:
+                    await el.evaluate("el => el.setAttribute('data-core', 'true')")
+                    await el.fill(val)
+                    filled += 1
+                except Exception:
+                    pass
 
-        # Location input + autocomplete dropdown lock
-        loc_el = await page.query_selector("input[name*='location' i], input[id*='location' i], input[aria-label*='location' i]")
+        loc_el = await page.query_selector("input[name*='location' i], input[id*='location' i]")
         if loc_el and await loc_el.is_visible():
             try:
+                await loc_el.evaluate("el => el.setAttribute('data-core', 'true')")
                 await loc_el.click()
                 await loc_el.fill("")
-                await loc_el.type(profile.get("location", "Raleigh, NC, USA"), delay=45)
+                await loc_el.type(profile.get("location", "Greensboro, NC, USA"), delay=45)
                 await asyncio.sleep(1.2)
                 await loc_el.press("ArrowDown")
                 await loc_el.press("Enter")
@@ -423,11 +381,9 @@ class ATSAutomator:
             except Exception:
                 pass
 
-        # 3. EXTRACT FULL DOM SCHEMA & RESOLVE ALL QUESTIONS (DETERMINISTIC + LLAMA 3.3)
-        schema = await self._extract_full_dom_schema(page)
+        # 3. Extract and Process the Question Blocks
+        schema = await self._extract_clean_dom_schema(page)
         unfilled_items = [item for item in schema if not item.get("filled")]
-
-        # Build answer map by qid
         qid_answers = {}
         today_str = datetime.now().strftime("%m/%d/%Y")
 
@@ -435,20 +391,78 @@ class ATSAutomator:
             qid = item["qid"]
             qtype = item["type"]
             lbl = item["label"]
-            lbl_low = lbl.lower()
+            low = lbl.lower()
             opts = item.get("options", [])
 
-            # Check user custom bridge answers first
-            for c_q, c_val in custom_answers.items():
-                if c_val and (c_q.lower()[:35] in lbl_low or lbl_low[:35] in c_q.lower()):
-                    qid_answers[qid] = c_val
+            # Check user-saved custom answers first
+            for c_q, c_v in custom_answers.items():
+                if c_v and (c_q.lower()[:30] in low or low[:30] in c_q.lower()):
+                    qid_answers[qid] = c_v
                     break
             if qid in qid_answers:
                 continue
 
-            # Deterministic fast-rules for common EEO/Lever questions
-            if qtype in ["select", "radio"]:
-                if any(k in lbl_low for k in ["hispanic", "latino", "ethnicity", "race"]):
+            # Deterministic mapping based on verified clean prompts
+            if "which location are you applying for" in low or "location" in low and opts:
+                for target in ["dallas", "remote", "austin"]:
+                    for o in opts:
+                        if target in o.lower():
+                            qid_answers[qid] = o
+                            break
+                    if qid in qid_answers:
+                        break
+
+            elif "school or university" in low:
+                for o in opts:
+                    if "north carolina state" in o.lower() or "nc state" in o.lower():
+                        qid_answers[qid] = o
+                        break
+
+            elif "degree" in low and "program" not in low and ("level" in low or "type" in low or opts):
+                for o in opts:
+                    if "bachelor" in o.lower() or "b.s." in o.lower():
+                        qid_answers[qid] = o
+                        break
+
+            elif "gpa" in low:
+                if qtype in ["select", "radio"]:
+                    for o in opts:
+                        if "3.5" in o or "3.5 - 3.9" in o or "3.5 - 4.0" in o or "3.0 - 3.5" in o:
+                            qid_answers[qid] = o
+                            break
+                elif qtype == "text":
+                    if not any(skip in low for skip in ["comment", "explain", "optional"]):
+                        qid_answers[qid] = profile.get("gpa", "3.5")
+
+            elif "how did you hear" in low or "campus visit" in low:
+                for o in opts:
+                    if any(h in o.lower() for h in ["campus visit", "career fair", "university", "handshake"]):
+                        qid_answers[qid] = o
+                        break
+
+            elif any(k in low for k in ["citizenship", "citizen status", "immigration", "u.s. person"]):
+                for o in opts:
+                    if "united states citizen" in o.lower() or "u.s. citizen" in o.lower() or o.lower() == "yes":
+                        qid_answers[qid] = o
+                        break
+
+            elif any(k in low for k in ["when did you begin", "start date"]):
+                qid_answers[qid] = profile.get("degree_start", "08/2023")
+
+            elif any(k in low for k in ["expect to complete", "graduation date", "completion date"]):
+                qid_answers[qid] = profile.get("grad_date", "12/2027")
+
+            elif "strongest technical accomplishment" in low:
+                qid_answers[qid] = profile.get("technical_accomplishments", "")
+
+            elif "mission" in low or "values" in low:
+                qid_answers[qid] = profile.get("mission_alignment", "")
+
+            elif any(k in low for k in ["if you selected", "if yes", "optional", "explain further", "comments on gpa"]):
+                qid_answers[qid] = ""
+
+            elif qtype in ["select", "radio"]:
+                if any(k in low for k in ["hispanic", "latino", "ethnicity", "race"]):
                     for o in opts:
                         if "hispanic or latino" in o.lower() and "not hispanic" not in o.lower():
                             qid_answers[qid] = o
@@ -458,62 +472,53 @@ class ATSAutomator:
                             if o.lower().startswith("white"):
                                 qid_answers[qid] = o
                                 break
-                elif "gender" in lbl_low or "sex" in lbl_low:
+                elif "gender" in low:
                     for o in opts:
                         if o.lower() in ["male", "man"]:
                             qid_answers[qid] = o
                             break
-                elif "veteran" in lbl_low:
+                elif "veteran" in low:
                     for o in opts:
-                        if any(k in o.lower() for k in ["not a protected veteran", "not a veteran", "i am not", "no"]):
+                        if any(k in o.lower() for k in ["not a protected veteran", "i am not", "no"]):
                             qid_answers[qid] = o
                             break
-                elif "disability" in lbl_low:
+                elif "disability" in low:
                     for o in opts:
                         if "yes" in o.lower() or "have a disability" in o.lower():
                             qid_answers[qid] = o
                             break
-                elif any(k in lbl_low for k in ["sponsor", "visa", "family member", "relative", "currently employed with"]):
+                elif any(k in low for k in ["sponsor", "visa", "relative", "family member"]):
                     for o in opts:
                         if o.lower() == "no" or o.lower().startswith("no,"):
                             qid_answers[qid] = o
                             break
-                elif any(k in lbl_low for k in ["u.s. person", "us person", "export license", "authorized", "citizen", "on-site", "onsite", "relocat"]):
-                    for o in opts:
-                        if o.lower() == "yes" or o.lower().startswith("yes,"):
-                            qid_answers[qid] = o
-                            break
 
             elif qtype == "checkbox":
-                if any(k in lbl_low for k in ["certify", "acknowledge", "agree", "proprietary", "authorization", "terms stated above", "privacy"]):
+                if any(k in low for k in ["certify", "acknowledge", "agree", "proprietary", "authorization", "terms", "privacy"]):
                     qid_answers[qid] = "CHECK"
 
             elif qtype == "text":
-                if any(k in lbl_low for k in ["if yes", "please specify", "additional information", "cover letter"]):
-                    qid_answers[qid] = ""
-                elif lbl_low in ["name", "name *"] or "signature" in lbl_low:
+                if low in ["name", "name *"] or "signature" in low:
                     qid_answers[qid] = profile.get("signature_name", "Joshua Hanflink")
-                elif lbl_low in ["date", "date *"] or "today's date" in lbl_low:
+                elif low in ["date", "date *"] or "today's date" in low:
                     qid_answers[qid] = today_str
-                elif "graduation" in lbl_low or "grad date" in lbl_low:
-                    qid_answers[qid] = profile.get("grad_date", "12/2027")
 
-        # Send any remaining unresolved items to Meta Llama 3.3
-        remaining_for_llama = [it for it in unfilled_items if it["qid"] not in qid_answers]
+        # Send remaining unresolved to Llama 3.3
+        remaining = [it for it in unfilled_items if it["qid"] not in qid_answers]
         llama_count = 0
-        if remaining_for_llama and self.groq_api_key:
-            llama_map = ask_llama_to_resolve_all(remaining_for_llama, profile, self.groq_api_key)
-            for k_qid, v_ans in llama_map.items():
+        if remaining and self.groq_api_key:
+            l_map = ask_llama_to_resolve_all(remaining, profile, self.groq_api_key)
+            for k_qid, v_ans in l_map.items():
                 if v_ans and v_ans != "NEEDS_HUMAN":
                     qid_answers[k_qid] = v_ans
                     llama_count += 1
 
-        # 4. APPLY ALL RESOLVED ANSWERS DIRECTLY BY data-ats-qid
+        # Apply Answers by data-ats-qid
         for item in unfilled_items:
             qid = item["qid"]
             qtype = item["type"]
             ans = qid_answers.get(qid)
-            if not ans:
+            if ans is None or ans == "":
                 continue
 
             try:
@@ -543,7 +548,7 @@ class ATSAutomator:
                             const lbl = r.closest('label') || document.querySelector(`label[for="${r.id}"]`);
                             const oTxt = (lbl ? lbl.innerText : (r.value || '')).toLowerCase().trim();
                             const firstLine = oTxt.split('\\n')[0].trim();
-                            if (firstLine === tLow || oTxt.startsWith(tLow) || tLow.startsWith(firstLine)) {
+                            if (firstLine === tLow || oTxt.includes(tLow) || tLow.includes(firstLine)) {
                                 r.click();
                                 r.checked = true;
                                 r.dispatchEvent(new Event('change', { bubbles: true }));
@@ -572,16 +577,15 @@ class ATSAutomator:
         return filled, llama_count
 
     async def _scrape_unanswered_questions(self, page):
-        schema = await self._extract_full_dom_schema(page)
+        schema = await self._extract_clean_dom_schema(page)
         unanswered = []
         seen = set()
         for item in schema:
             if item.get("filled"):
                 continue
             lbl = item.get("label", "").strip()
-            lbl_low = lbl.lower()
-            # Ignore optional / conditional 'If yes, please specify' or social link fields
-            if any(skip in lbl_low for skip in ["if yes", "please specify", "additional information", "cover letter", "other website", "twitter", "portfolio", "github"]):
+            low = lbl.lower()
+            if any(skip in low for skip in ["if you selected", "if yes", "please specify", "additional information", "optional", "cover letter"]):
                 continue
             if item["type"] == "checkbox":
                 continue
@@ -749,7 +753,7 @@ if st.sidebar.button("🧹 Purge Database (Full Reset)"):
     st.rerun()
 
 st.title("⚡ Meta Llama 3.3 ATS Auto-Applier & Question Bridge")
-st.caption("Full-DOM Radio/Dropdown/Checkbox Tagging • Hard Resume-Parse Lock • Groq Llama-3.3-70B Mapper")
+st.caption("Clean .application-label Hierarchy • Shield AI & Lever Multi-Choice Calibration")
 
 tab1, tab2, tab3 = st.tabs(["1. Add Jobs to Queue", "2. Process Queue & Llama Bridge", "3. Application Tracker"])
 
@@ -853,7 +857,7 @@ with tab2:
                     st.rerun()
         with c2:
             if st.button("🔍 Fill & Verify Only (No Submit)", use_container_width=True):
-                with st.spinner("Uploading resume, tagging DOM, and filling all fields without submitting..."):
+                with st.spinner("Uploading resume, extracting clean questions, and checking fields..."):
                     automator = ATSAutomator(headless=is_headless, groq_api_key=groq_key)
                     res = run_async_coro(automator.execute_full_application(url, profile, saved_custom_answers, auto_submit=False))
                     conn = get_db_connection()
@@ -896,7 +900,7 @@ with tab2:
                             updated_custom[q_lbl] = typed.strip()
 
                 if st.form_submit_button("⚡ Inject Custom Answers & Auto-Submit Now", use_container_width=True):
-                    with st.spinner("Injecting custom answers and submitting..."):
+                    with st.spinner("Injecting answers and submitting..."):
                         automator = ATSAutomator(headless=is_headless, groq_api_key=groq_key)
                         res = run_async_coro(automator.execute_full_application(url, profile, updated_custom, auto_submit=True))
                         conn = get_db_connection()
@@ -950,4 +954,3 @@ with tab3:
                         conn.close()
                         st.rerun()
                 st.markdown("<hr style='margin: 0.4rem 0; border-color: #1e293b;'/>", unsafe_allow_html=True)
-
